@@ -24,13 +24,21 @@ type Server struct {
 	http *http.Server
 }
 
+// Routes is anything that adds its own handlers, such as the auth service.
+type Routes interface {
+	Register(mux *http.ServeMux)
+}
+
 // New builds a Server with its routes registered. ws serves the WebSocket
 // endpoint; it may be nil in tests that only need the HTTP routes.
-func New(cfg Config, log *slog.Logger, ws http.Handler) *Server {
+func New(cfg Config, log *slog.Logger, ws http.Handler, extra ...Routes) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealth)
 	if ws != nil {
 		mux.Handle("GET /ws", ws)
+	}
+	for _, r := range extra {
+		r.Register(mux)
 	}
 
 	return &Server{

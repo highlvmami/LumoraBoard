@@ -22,6 +22,8 @@ export default defineConfig({
 		// Backend runs on :8080 in dev (see Makefile).
 		proxy: {
 			'/healthz': 'http://localhost:8080',
+			'/api': 'http://localhost:8080',
+			'/auth': 'http://localhost:8080',
 			'/ws': { target: 'ws://localhost:8080', ws: true }
 		}
 	},

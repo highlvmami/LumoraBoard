@@ -57,16 +57,51 @@ func DefaultConfig() Config {
 
 var roomNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
+// Identity is who a connection belongs to and what it may do.
+type Identity struct {
+	User   string // account id; empty for guests and open mode
+	Name   string
+	Avatar string
+	Role   proto.Role
+}
+
+// Authorizer decides who is behind an upgrade request and their role on
+// the board. It runs before the room is joined.
+type Authorizer interface {
+	Authorize(r *http.Request, board string) (Identity, error)
+}
+
+// Authorization failures. The socket is accepted and then closed with
+// these codes (4000-4999 are for applications) because a browser cannot
+// read the HTTP status of a failed upgrade.
+var (
+	ErrUnauthorized = errors.New("sign in required")
+	ErrForbidden    = errors.New("no access to this board")
+)
+
+const (
+	closeUnauthorized websocket.StatusCode = 4401
+	closeForbidden    websocket.StatusCode = 4403
+)
+
 // Handler upgrades requests on its route and attaches them to the hub.
 type Handler struct {
-	hub *room.Hub
-	cfg Config
-	log *slog.Logger
+	hub  *room.Hub
+	cfg  Config
+	log  *slog.Logger
+	auth Authorizer
 }
 
 // NewHandler builds the handler.
 func NewHandler(hub *room.Hub, cfg Config, log *slog.Logger) *Handler {
 	return &Handler{hub: hub, cfg: cfg, log: log}
+}
+
+// WithAuth makes every connection go through a. Without it everyone is
+// an editor and picks their own display name with ?name=.
+func (h *Handler) WithAuth(a Authorizer) *Handler {
+	h.auth = a
+	return h
 }
 
 // maxNameRunes caps the display name a client may pick.
@@ -91,17 +126,39 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		since = v
 	}
 
+	id := Identity{Role: proto.RoleEditor, Name: cleanName(r.URL.Query().Get("name"))}
+	var authErr error
+	if h.auth != nil {
+		id, authErr = h.auth.Authorize(r, name)
+		id.Name = cleanName(id.Name)
+	}
+
+	// Origin is checked here, before any auth answer goes out.
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: h.cfg.OriginPatterns})
 	if err != nil {
 		h.log.Debug("accept failed", "err", err)
 		return
 	}
 	conn.SetReadLimit(h.cfg.MaxMessageBytes)
+	switch {
+	case errors.Is(authErr, ErrUnauthorized):
+		_ = conn.Close(closeUnauthorized, authErr.Error())
+		return
+	case errors.Is(authErr, ErrForbidden):
+		_ = conn.Close(closeForbidden, authErr.Error())
+		return
+	case authErr != nil:
+		h.log.Error("authorize failed", "err", authErr)
+		_ = conn.Close(websocket.StatusInternalError, "try again later")
+		return
+	}
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	client := room.NewClient(newClientID(), h.cfg.SendBuffer).WithName(cleanName(r.URL.Query().Get("name")))
+	client := room.NewClient(newClientID(), h.cfg.SendBuffer).
+		WithName(id.Name).
+		WithAccount(id.User, id.Avatar, id.Role)
 	rm, err := h.hub.Join(ctx, name, client, since)
 	if err != nil {
 		// 1013: the client's backoff retries, which is right for both a

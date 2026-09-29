@@ -366,3 +366,70 @@ func TestCursorFloodIsThrottled(t *testing.T) {
 		t.Fatalf("second cursor = %+v, want hidden", cur)
 	}
 }
+
+type fakeAuth struct {
+	id  Identity
+	err error
+}
+
+func (f fakeAuth) Authorize(*http.Request, string) (Identity, error) { return f.id, f.err }
+
+func dialWithAuth(t *testing.T, a Authorizer) *websocket.Conn {
+	t.Helper()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	hub := room.NewHub(room.Config{InboundBuffer: 8, IdleTimeout: time.Hour, OpLogSize: 100}, log)
+	ctx, cancel := context.WithCancel(context.Background())
+	hubDone := make(chan struct{})
+	go func() {
+		defer close(hubDone)
+		_ = hub.Run(ctx)
+	}()
+	srv := httptest.NewServer(NewHandler(hub, DefaultConfig(), log).WithAuth(a))
+	t.Cleanup(func() {
+		cancel()
+		<-hubDone
+		srv.CloseClientConnections()
+		srv.Close()
+	})
+	dctx, dcancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer dcancel()
+	conn, resp, err := websocket.Dial(dctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"?room=r1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	t.Cleanup(func() { _ = conn.CloseNow() })
+	return conn
+}
+
+func TestAuthFailuresCloseWithAppCodes(t *testing.T) {
+	for want, err := range map[websocket.StatusCode]error{4401: ErrUnauthorized, 4403: ErrForbidden} {
+		conn := dialWithAuth(t, fakeAuth{err: err})
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_, _, rerr := conn.Read(ctx)
+		cancel()
+		if websocket.CloseStatus(rerr) != want {
+			t.Fatalf("%v: close status = %v (%v), want %d", err, websocket.CloseStatus(rerr), rerr, want)
+		}
+	}
+}
+
+func TestViewerCanWatchButNotDraw(t *testing.T) {
+	conn := dialWithAuth(t, fakeAuth{id: Identity{User: "u1", Name: "Vera", Role: proto.RoleViewer}})
+	var h proto.Hello
+	if err := json.Unmarshal(read(t, conn, proto.TypeHello).Payload, &h); err != nil {
+		t.Fatal(err)
+	}
+	if h.Role != proto.RoleViewer {
+		t.Fatalf("hello role = %q", h.Role)
+	}
+	send(t, conn, `{"v":1,"type":"op","clientOpId":"x","payload":{"kind":"add","id":"r1","object":{"id":"r1","kind":"rect"}}}`)
+	rej := read(t, conn, proto.TypeReject)
+	var p proto.Reject
+	_ = json.Unmarshal(rej.Payload, &p)
+	if rej.ClientOpID != "x" || !strings.Contains(p.Reason, "read-only") {
+		t.Fatalf("reject = %+v %+v", rej, p)
+	}
+}

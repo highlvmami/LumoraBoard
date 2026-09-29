@@ -42,6 +42,10 @@ export type Op =
 
 export type Board = Map<string, BoardObject>;
 
+export type Role = 'owner' | 'editor' | 'viewer';
+
+export const canEdit = (r: Role) => r === 'owner' || r === 'editor';
+
 /**
  * Applies one op to a board, mutating it. Returns false and leaves the
  * board untouched when the op does not fit (same rules as the server).
@@ -99,6 +103,8 @@ export class BoardStore {
 	/** Last seq applied to `confirmed`; sent as `since` on reconnect. */
 	seq = 0;
 	clientId = '';
+	/** What the server lets this client do; viewers' ops are rejected. */
+	role: Role = 'editor';
 	pending: Pending[] = [];
 
 	constructor(private readonly onEvent: (e: StoreEvent) => void = () => {}) {}
@@ -140,8 +146,10 @@ export class BoardStore {
 			seq: number;
 			resume?: boolean;
 			objects?: BoardObject[];
+			role?: Role;
 		};
 		this.clientId = h.clientId;
+		this.role = h.role ?? 'editor';
 		if (h.resume) {
 			// The ops we missed follow as ordinary op messages.
 			return false;

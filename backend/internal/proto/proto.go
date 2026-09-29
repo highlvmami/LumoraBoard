@@ -56,13 +56,48 @@ type Hello struct {
 	Members  []Member        `json:"members"`
 	Resume   bool            `json:"resume,omitempty"`
 	Objects  json.RawMessage `json:"objects,omitempty"`
+	// Role is what this client may do; viewers get their ops rejected.
+	Role Role `json:"role,omitempty"`
+}
+
+// Role is what a member may do on a board.
+type Role string
+
+// Roles, from most to least privileged.
+const (
+	RoleOwner  Role = "owner"
+	RoleEditor Role = "editor"
+	RoleViewer Role = "viewer"
+)
+
+// CanEdit reports whether the role may change the board.
+func (r Role) CanEdit() bool { return r == RoleOwner || r == RoleEditor }
+
+// Valid reports whether r is one of the known roles.
+func (r Role) Valid() bool { return r == RoleOwner || r == RoleEditor || r == RoleViewer }
+
+// Rank orders roles so the stronger of two can be kept.
+func (r Role) Rank() int {
+	switch r {
+	case RoleOwner:
+		return 3
+	case RoleEditor:
+		return 2
+	case RoleViewer:
+		return 1
+	}
+	return 0
 }
 
 // Member identifies someone in a room. It is the payload of TypeJoined
-// and an element of Hello.Members.
+// and an element of Hello.Members. ID is per connection; User is the
+// account behind it, empty when the server runs without sign-in.
 type Member struct {
-	ID   string `json:"id"`
-	Name string `json:"name,omitempty"`
+	ID     string `json:"id"`
+	Name   string `json:"name,omitempty"`
+	User   string `json:"user,omitempty"`
+	Avatar string `json:"avatar,omitempty"`
+	Role   Role   `json:"role,omitempty"`
 }
 
 // Cursor is the payload of a TypeCursor message, in board coordinates.
