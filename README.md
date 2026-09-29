@@ -25,7 +25,7 @@ The frontend dev server proxies `/healthz` and `/ws` to the backend.
 
 ## Persistence
 
-With `LUMORA_DATABASE_URL` set, rooms persist to Postgres (the schema is applied at startup). Each room has a write-behind persister: accepted ops are batched and written off the room goroutine, a snapshot every 1000 ops lets the store drop the ops it covers, and a room that restarts loads the latest snapshot plus the ops after it. If the database falls behind, the persister's bounded queue fills and the room pauses taking new ops (cursors keep flowing) until it catches up; accepted ops are never dropped. Without the variable the server runs in memory only.
+With `LUMORA_DATABASE_URL` set, rooms persist to Postgres (the schema is applied at startup). Each room has a write-behind persister: accepted ops are batched and written off the room goroutine, a snapshot every 1000 ops lets the store drop the ops it covers, and a room that restarts loads the latest snapshot plus the ops after it. If the database falls behind, the persister's bounded queue fills and the room pauses taking new ops (cursors keep flowing) until it catches up; accepted ops are never dropped. Without the variable boards live in process memory until the server restarts.
 
 Store tests against a real database run when `LUMORA_TEST_DATABASE_URL` is set; `make test` sets it to the docker-compose database.
 
@@ -46,3 +46,7 @@ With no provider configured the server stays open: everyone can draw on every bo
 ## Chat
 
 Each board has a chat on the same socket. `chat.send` goes through the room goroutine like an op, so messages get per-board ids in one order, fan out to everyone and are written by the same write-behind persister. The latest 50 arrive with `hello`; older ones page in from `GET /api/boards/{board}/chat?before=<id>&limit=<n>`. Each account gets a token bucket (burst 5, one message a second after that) shared across its tabs; a message may point at a board object, which the panel shows as a link that selects the object and pans to it. `chat.typing` is lossy presence like cursors, at most once a second per connection. Viewers with an account may chat; anonymous guests read only.
+
+## Export and import
+
+PNG and SVG are drawn in the browser. High-resolution PNG (up to 4x, capped at 16M pixels), PDF and JSON backups are server jobs: `POST /api/boards/{board}/exports` puts a job on a bounded queue that a fixed pool of workers (one per core, at most four) drains. Progress goes to the requesting connection as `export.progress` messages through its room; `GET /api/exports/{id}` reports status, `GET /api/exports/{id}/file` downloads the result (kept ten minutes) and `DELETE /api/exports/{id}` cancels through the job's context. A full queue answers 503 and more than three unfinished exports per person 429, so a burst of requests waits or is turned away instead of piling up. `POST /api/boards/import` with a JSON backup validates every object like a live op and opens it as a new board owned by the importer.
