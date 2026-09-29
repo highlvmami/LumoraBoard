@@ -16,6 +16,15 @@ import (
 // ErrHubClosed is returned by Join once the hub has stopped.
 var ErrHubClosed = errors.New("hub closed")
 
+// ErrNotOwner is returned by Join when another instance owns the room.
+var ErrNotOwner = errors.New("room is owned by another instance")
+
+// Ownership decides whether this instance may run a board's room. Claim
+// is called on the hub goroutine, so it must answer from memory.
+type Ownership interface {
+	Claim(board string) (store.Fence, bool)
+}
+
 // Config tunes the hub and every room it creates.
 type Config struct {
 	// InboundBuffer is how many ops a room queues before Submit blocks.
@@ -42,6 +51,11 @@ type Config struct {
 	SnapshotEvery int
 	// ShutdownFlush is how long a stopping server keeps retrying writes.
 	ShutdownFlush time.Duration
+
+	// Owner, when set, must agree before this hub opens a room: with
+	// several servers only the lease holder may run a board. Nil means a
+	// single server that owns everything.
+	Owner Ownership
 
 	// ChatBurst and ChatRate limit chat per account (per connection for
 	// anonymous members): bursts of ChatBurst, refilled at ChatRate/s.
@@ -94,6 +108,8 @@ type Hub struct {
 	retireCh chan retireReq
 	countCh  chan chan int
 	findCh   chan findReq
+	evictCh  chan string
+	listCh   chan chan []string
 	closed   chan struct{}
 	wg       sync.WaitGroup
 
@@ -136,6 +152,8 @@ func NewHub(cfg Config, log *slog.Logger) *Hub {
 		retireCh: make(chan retireReq),
 		countCh:  make(chan chan int),
 		findCh:   make(chan findReq),
+		evictCh:  make(chan string),
+		listCh:   make(chan chan []string),
 		closed:   make(chan struct{}),
 		rooms:    make(map[string]*Room),
 	}
@@ -156,7 +174,17 @@ func (h *Hub) Run(ctx context.Context) error {
 		case req := <-h.joinCh:
 			rm, ok := h.rooms[req.room]
 			if !ok {
+				var fence *store.Fence
+				if h.cfg.Owner != nil {
+					f, mine := h.cfg.Owner.Claim(req.room)
+					if !mine {
+						req.reply <- hubJoinResult{err: ErrNotOwner}
+						continue
+					}
+					fence = &f
+				}
 				rm = newRoom(req.room, h)
+				rm.persist.fence = fence
 				h.rooms[req.room] = rm
 				h.wg.Add(1)
 				go rm.run(ctx)
@@ -182,6 +210,22 @@ func (h *Hub) Run(ctx context.Context) error {
 
 		case req := <-h.findCh:
 			req.reply <- h.rooms[req.room]
+
+		case name := <-h.evictCh:
+			// Forget the room first so a join that follows cannot reach
+			// it; the room then closes its members and winds down.
+			if rm, ok := h.rooms[name]; ok {
+				delete(h.rooms, name)
+				close(rm.evicted)
+				h.log.Warn("lost ownership; closed room", "room", name)
+			}
+
+		case reply := <-h.listCh:
+			names := make([]string, 0, len(h.rooms))
+			for name := range h.rooms {
+				names = append(names, name)
+			}
+			reply <- names
 		}
 	}
 }
@@ -292,4 +336,28 @@ func (h *Hub) Notify(ctx context.Context, room, client, user string, msg []byte)
 	case rm.directCh <- directMsg{client: client, user: user, msg: msg}:
 	default:
 	}
+}
+
+// Evict closes a room this instance no longer owns. Its members are told
+// the room moved and reconnect to the new owner. Writes still queued are
+// fenced off by the store.
+func (h *Hub) Evict(ctx context.Context, name string) {
+	select {
+	case h.evictCh <- name:
+	case <-h.closed:
+	case <-ctx.Done():
+	}
+}
+
+// Rooms lists the rooms this hub runs.
+func (h *Hub) Rooms(ctx context.Context) ([]string, error) {
+	reply := make(chan []string, 1)
+	select {
+	case h.listCh <- reply:
+	case <-h.closed:
+		return nil, ErrHubClosed
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return <-reply, nil
 }

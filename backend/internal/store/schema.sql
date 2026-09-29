@@ -39,3 +39,15 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 	created_at timestamptz NOT NULL,
 	PRIMARY KEY (board, id)
 );
+
+-- Room ownership when several servers share the database. A lease names
+-- the instance that runs a board's room and until when; epoch grows each
+-- time the board changes hands and fences writes from a former owner.
+-- Rows are never deleted, so epochs only go up.
+CREATE TABLE IF NOT EXISTS room_leases (
+	board      text        PRIMARY KEY,
+	instance   text        NOT NULL,
+	addr       text        NOT NULL,
+	epoch      bigint      NOT NULL,
+	expires_at timestamptz NOT NULL
+);

@@ -17,6 +17,9 @@ const (
 	ReasonShutdown CloseReason = "server shutdown"
 	// ReasonLeft means the client asked to leave.
 	ReasonLeft CloseReason = "left"
+	// ReasonMoved means this server no longer owns the room; reconnecting
+	// reaches the new owner.
+	ReasonMoved CloseReason = "room moved"
 )
 
 // Client is one connection's view of a room: a bounded outbox the room
