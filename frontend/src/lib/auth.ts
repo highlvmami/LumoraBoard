@@ -19,6 +19,26 @@ export async function fetchAuthStatus(fetcher: typeof fetch = fetch): Promise<Au
 	return res.json();
 }
 
+/**
+ * Asks whether this browser may open a board before a socket is opened:
+ * a refused socket can only say why with a close code, which some
+ * proxies lose. Anything unexpected answers 'ok' and leaves it to the
+ * socket.
+ */
+export async function checkAccess(
+	board: string,
+	fetcher: typeof fetch = fetch
+): Promise<'ok' | 'signin' | 'forbidden'> {
+	try {
+		const res = await fetcher(`/api/boards/${encodeURIComponent(board)}/access`, { credentials: 'same-origin' });
+		if (res.status === 401) return 'signin';
+		if (res.status === 403) return 'forbidden';
+	} catch {
+		// Offline or an old server: the socket will tell.
+	}
+	return 'ok';
+}
+
 /** Where a provider button sends the browser; it comes back to `next`. */
 export function loginUrl(provider: string, next: string): string {
 	return `/auth/${encodeURIComponent(provider)}/login?next=${encodeURIComponent(next)}`;

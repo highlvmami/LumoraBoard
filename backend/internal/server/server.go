@@ -3,13 +3,11 @@ package server
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net"
 	"net/http"
-	"runtime/pprof"
 	"time"
 )
 
@@ -20,10 +18,6 @@ type Config struct {
 	// Version names the running build (a commit), reported by /healthz
 	// and /version.
 	Version string
-	// DebugToken, when set, enables GET /debug/goroutines?token=<it>,
-	// a dump of every goroutine's stack. Temporary, for diagnosing a
-	// stall on a host with no shell.
-	DebugToken string
 }
 
 // Server is the HTTP entry point.
@@ -48,9 +42,6 @@ func New(cfg Config, log *slog.Logger, ws http.Handler, extra ...Routes) *Server
 	}
 	mux.HandleFunc("GET /healthz", jsonHandler(health))
 	mux.HandleFunc("GET /version", jsonHandler(map[string]string{"version": cfg.Version}))
-	if cfg.DebugToken != "" {
-		mux.HandleFunc("GET /debug/goroutines", goroutineDump(cfg.DebugToken))
-	}
 	if ws != nil {
 		mux.Handle("GET /ws", ws)
 	}
@@ -112,20 +103,6 @@ func jsonHandler(body map[string]string) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(body)
-	}
-}
-
-// goroutineDump writes every goroutine's stack for a request carrying
-// the token, and a plain 404 for anyone else.
-func goroutineDump(token string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("token")), []byte(token)) != 1 {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
-		_ = pprof.Lookup("goroutine").WriteTo(w, 2)
 	}
 }
 

@@ -316,3 +316,26 @@ func TestOpenModeWhenNothingIsConfigured(t *testing.T) {
 		t.Fatalf("open mode = %+v %v", id, err)
 	}
 }
+
+func TestAccessAnswersBeforeTheSocket(t *testing.T) {
+	a := newApp(t, Config{DevLogin: true})
+	alice, bob := a.client, a.newBrowser()
+	devLogin(t, a, alice, "Alice")
+	devLogin(t, a, bob, "Bob")
+	access := func(c *http.Client) (int, string) {
+		resp := get(t, c, a.URL+"/api/boards/b1/access")
+		defer func() { _ = resp.Body.Close() }()
+		var body struct{ Role string }
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+		return resp.StatusCode, body.Role
+	}
+	if code, role := access(alice); code != http.StatusOK || role != string(proto.RoleOwner) {
+		t.Fatalf("owner = %d %q", code, role)
+	}
+	if code, _ := access(bob); code != http.StatusForbidden {
+		t.Fatalf("uninvited = %d, want 403", code)
+	}
+	if code, _ := access(a.newBrowser()); code != http.StatusUnauthorized {
+		t.Fatalf("anonymous = %d, want 401", code)
+	}
+}
