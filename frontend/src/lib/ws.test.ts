@@ -141,6 +141,26 @@ describe('connectRoom', () => {
 		conn.close();
 	});
 
+	it('gives up on a handshake that never completes and says so', () => {
+		const details: (string | undefined)[] = [];
+		const conn = connectRoom(
+			'r',
+			{ onMessage: vi.fn(), onState: (_s: ConnectionState, d?: string) => details.push(d) },
+			{ minDelay: 100, handshakeTimeout: 5000, random: () => 0, createSocket }
+		);
+		vi.advanceTimersByTime(4999);
+		expect(FakeSocket.instances).toHaveLength(1);
+		vi.advanceTimersByTime(1);
+		expect(details.at(-1)).toMatch(/^no answer from server/);
+		vi.advanceTimersByTime(100);
+		expect(FakeSocket.instances).toHaveLength(2);
+		// An opened socket is never cut by the handshake timer.
+		FakeSocket.instances[1].open();
+		vi.advanceTimersByTime(60_000);
+		expect(FakeSocket.instances).toHaveLength(2);
+		conn.close();
+	});
+
 	it('sends ops only while open', () => {
 		const conn = connectRoom('r', events, { createSocket });
 		expect(() => conn.send({ kind: 'delete', id: 'x' })).toThrow();

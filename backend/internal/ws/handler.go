@@ -39,6 +39,8 @@ type Config struct {
 	ReadTimeout time.Duration
 	// WriteTimeout bounds a single outbound write.
 	WriteTimeout time.Duration
+	// HandshakeTimeout bounds authorizing and joining a room.
+	HandshakeTimeout time.Duration
 	// CursorInterval is the minimum gap between two cursor updates from
 	// one connection; faster ones are dropped. Clients throttle to about
 	// 25 Hz on their own, so this only bites on misbehaving ones.
@@ -48,11 +50,12 @@ type Config struct {
 // DefaultConfig is what the server uses unless told otherwise.
 func DefaultConfig() Config {
 	return Config{
-		SendBuffer:      256,
-		MaxMessageBytes: 64 << 10,
-		ReadTimeout:     60 * time.Second,
-		WriteTimeout:    10 * time.Second,
-		CursorInterval:  25 * time.Millisecond,
+		SendBuffer:       256,
+		MaxMessageBytes:  64 << 10,
+		ReadTimeout:      60 * time.Second,
+		WriteTimeout:     10 * time.Second,
+		HandshakeTimeout: 10 * time.Second,
+		CursorInterval:   25 * time.Millisecond,
 	}
 }
 
@@ -142,14 +145,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case isForwarded:
 		id = fid
 	case h.auth != nil:
-		id, authErr = h.auth.Authorize(r, name)
+		// Bounded: a stuck database must fail the upgrade, not hang it.
+		actx, cancel := context.WithTimeout(r.Context(), h.cfg.HandshakeTimeout)
+		id, authErr = h.auth.Authorize(r.WithContext(actx), name)
+		cancel()
 		id.Name = cleanName(id.Name)
 	}
 
 	// Origin is checked here, before any auth answer goes out.
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: h.cfg.OriginPatterns})
 	if err != nil {
-		h.log.Debug("accept failed", "err", err)
+		// Usually an origin the server does not allow; the browser only
+		// sees the socket close, so this log line is the explanation.
+		h.log.Warn("websocket handshake rejected", "err", err, "origin", r.Header.Get("Origin"), "host", r.Host)
 		return
 	}
 	conn.SetReadLimit(h.cfg.MaxMessageBytes)
@@ -195,11 +203,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// 1013: the client's backoff retries, which is right for both a
 		// stopping hub and a board the store could not load yet.
+		h.log.Warn("join failed", "room", name, "err", err)
 		_ = conn.Close(websocket.StatusTryAgainLater, "room unavailable")
 		return
 	}
 	log := h.log.With("room", name, "client", client.ID())
-	log.Debug("connected")
+	// Info on purpose: on a host with only logs to go by, these two lines
+	// show whether sockets reach the server and why they end.
+	start := time.Now()
+	log.Info("socket connected", "user", id.User)
 
 	writeDone, readDone := make(chan struct{}), make(chan struct{})
 	go func() {
@@ -219,7 +231,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	<-writeDone
 
 	h.closeConn(conn, client, err)
-	log.Debug("disconnected", "reason", client.Reason(), "err", err)
+	log.Info("socket closed", "after", time.Since(start).Round(time.Second).String(), "reason", client.Reason(), "err", err)
 }
 
 // readPump decodes client frames and hands them to the room. It returns

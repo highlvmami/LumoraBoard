@@ -58,10 +58,10 @@ func run() error {
 	roomCfg := room.DefaultConfig()
 	var authStore auth.Store = auth.NewMemory()
 	var leases store.Leases // set with a database; clustering needs one
-	if url := os.Getenv("LUMORA_DATABASE_URL"); url != "" {
+	if dsn := os.Getenv("LUMORA_DATABASE_URL"); dsn != "" {
 		connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		pool, err := pgxpool.New(connectCtx, url)
+		pool, err := newPool(connectCtx, dsn)
 		if err != nil {
 			return fmt.Errorf("connect to database: %w", err)
 		}
@@ -135,6 +135,24 @@ func run() error {
 		node.Release()
 	}
 	return err
+}
+
+// newPool opens the database pool. Hosted Postgres such as Neon suspends
+// an idle database and drops its connections, sometimes without a reset
+// reaching us; a query on such a connection would hang until TCP gives up.
+// So idle connections are retired well before a typical five-minute
+// suspend, health checks run often, and keepalives find dead peers.
+func newPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	cfg.MaxConnIdleTime = time.Minute
+	cfg.HealthCheckPeriod = 15 * time.Second
+	cfg.ConnConfig.ConnectTimeout = 10 * time.Second
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 15 * time.Second}
+	cfg.ConnConfig.DialFunc = dialer.DialContext
+	return pgxpool.NewWithConfig(ctx, cfg)
 }
 
 // clusterNode joins a cluster when LUMORA_CLUSTER_SECRET is set. Every

@@ -31,6 +31,8 @@ export type ConnectOptions = {
 	/** Backoff bounds in ms. */
 	minDelay?: number;
 	maxDelay?: number;
+	/** Gives up on a handshake that has not completed after this long (ms). */
+	handshakeTimeout?: number;
 	/** Injectable for tests. */
 	createSocket?: (url: string) => WebSocket;
 	random?: () => number;
@@ -97,6 +99,7 @@ export type RoomConnection = {
 export function connectRoom(room: string, events: RoomEvents, opts: ConnectOptions = {}): RoomConnection {
 	const minDelay = opts.minDelay ?? 500;
 	const maxDelay = opts.maxDelay ?? 15_000;
+	const handshakeTimeout = opts.handshakeTimeout ?? 15_000;
 	const createSocket = opts.createSocket ?? ((url) => new WebSocket(url));
 	const random = opts.random ?? Math.random;
 
@@ -110,8 +113,16 @@ export function connectRoom(room: string, events: RoomEvents, opts: ConnectOptio
 		events.onState(attempt === 0 ? 'connecting' : 'reconnecting', attempt === 0 ? undefined : `attempt ${attempt}`);
 		const s = createSocket(roomSocketUrl(room, since, globalThis.location, opts.name));
 		socket = s;
+		// A handshake can hang (a proxy or the server stuck); without this
+		// the page would say "reconnecting" forever.
+		let stalled = false;
+		const handshake = setTimeout(() => {
+			stalled = true;
+			s.close();
+		}, handshakeTimeout);
 
 		s.onopen = () => {
+			clearTimeout(handshake);
 			attempt = 0;
 			events.onState('open');
 		};
@@ -123,9 +134,10 @@ export function connectRoom(room: string, events: RoomEvents, opts: ConnectOptio
 			// onclose follows; nothing to do here.
 		};
 		s.onclose = (e) => {
+			clearTimeout(handshake);
 			if (socket !== s) return;
 			socket = null;
-			const detail = e.reason ? `${e.code} ${e.reason}` : `${e.code}`;
+			const detail = stalled ? 'no answer from server' : e.reason ? `${e.code} ${e.reason}` : `${e.code}`;
 			if (closed || FATAL_CLOSE_CODES.has(e.code)) {
 				events.onState('closed', detail, e.code);
 				return;
