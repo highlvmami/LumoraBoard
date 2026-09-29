@@ -555,7 +555,7 @@
 		width: 100%;
 		height: 100%;
 		overflow: hidden;
-		background: #fafafa;
+		background: #f8fafc;
 		user-select: none;
 	}
 	canvas {
@@ -585,9 +585,10 @@
 		top: 16px;
 		background: var(--c);
 		color: white;
-		font: 600 11px/1 system-ui, sans-serif;
-		padding: 3px 6px;
-		border-radius: 4px;
+		font: 600 11px/1 Inter, system-ui, sans-serif;
+		padding: 4px 7px;
+		border-radius: 999px;
+		box-shadow: 0 2px 6px rgba(15, 23, 42, 0.2);
 		white-space: nowrap;
 	}
 	.editor {
@@ -609,11 +610,14 @@
 		display: flex;
 		align-items: center;
 		gap: 2px;
-		padding: 4px;
-		background: white;
+		padding: 5px;
+		background: rgba(255, 255, 255, 0.92);
+		backdrop-filter: blur(8px);
 		border: 1px solid #e4e4e7;
-		border-radius: 10px;
-		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+		border-radius: 14px;
+		box-shadow:
+			0 1px 2px rgba(15, 23, 42, 0.05),
+			0 10px 30px rgba(15, 23, 42, 0.1);
 	}
 	.toolbar {
 		top: 12px;
@@ -633,18 +637,30 @@
 		min-width: 34px;
 		height: 34px;
 		border: 0;
-		border-radius: 7px;
+		border-radius: 9px;
 		background: transparent;
 		color: #3f3f46;
 		cursor: pointer;
-		font: 500 14px system-ui, sans-serif;
+		font: 500 14px Inter, system-ui, sans-serif;
+		transition:
+			background 0.12s,
+			color 0.12s;
 	}
 	button:hover {
 		background: #f4f4f5;
 	}
 	button.active {
-		background: #e0e7ff;
-		color: #3730a3;
+		background: #eef2ff;
+		color: #4f46e5;
+		box-shadow: inset 0 0 0 1px #c7d2fe;
+	}
+	.swatch.active {
+		box-shadow: none;
+		background: transparent;
+	}
+	button:focus-visible {
+		outline: none;
+		box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.45);
 	}
 	.pct {
 		min-width: 52px;
@@ -668,8 +684,8 @@
 	.sep {
 		flex: none;
 		width: 1px;
-		height: 22px;
-		margin: 0 4px;
+		height: 24px;
+		margin: 0 5px;
 		background: #e4e4e7;
 	}
 </style>

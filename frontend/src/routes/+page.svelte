@@ -557,7 +557,18 @@
 
 <div class="app">
 	<header>
-		<strong class="logo">LumoraBoard</strong>
+		<strong class="logo">
+			<svg class="mark" viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
+				<defs
+					><linearGradient id="lb-mark" x1="0" y1="0" x2="1" y2="1"
+						><stop offset="0" stop-color="#6366f1" /><stop offset="1" stop-color="#a855f7" /></linearGradient
+					></defs
+				>
+				<rect width="32" height="32" rx="8" fill="url(#lb-mark)" />
+				<path d="M8.5 21.5c2.5-6 5.5-9 7.5-6.5s4 3 7.5-5" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" />
+			</svg>
+			<span class="wordmark">LumoraBoard</span>
+		</strong>
 		{#if screen === 'board'}
 			<button type="button" class="quiet" onclick={home} title="Back to the menu">← Menu</button>
 			<span class="room-name" title="Board">{room}</span>
@@ -602,7 +613,7 @@
 			</div>
 			<div class="share-wrap">
 				{#if auth?.enabled && role === 'owner'}
-					<button type="button" aria-expanded={shareOpen} onclick={() => (shareOpen = !shareOpen)}>Invite</button>
+					<button type="button" class="accent" aria-expanded={shareOpen} onclick={() => (shareOpen = !shareOpen)}>Invite</button>
 					{#if shareOpen}
 						<div class="menu invites" role="menu">
 							{#each [['editor', 'Can edit'], ['viewer', 'View only']] as const as [r, label] (r)}
@@ -625,8 +636,8 @@
 			<button type="button" onclick={() => (screen = 'name')}>Sign in to edit</button>
 		{/if}
 		{#if screen === 'board'}
-			<p class="status">
-				<span class="dot" data-status={socket}></span>
+			<p class="status pill" data-status={socket}>
+				<span class="dot"></span>
 				<strong data-status={socket}>{socket}</strong>
 				{#if detail && socket !== 'open'}<span class="muted">({detail})</span>{/if}
 				<span class="muted">· backend <strong data-status={health}>{health}</strong></span>
@@ -637,14 +648,20 @@
 	</header>
 
 	<main>
-		<div class="stage">
+		<div class="stage" class:landing={screen !== 'board' || !!gate}>
 			{#if screen === 'loading'}
 				<p class="gate muted">Loading…</p>
 			{:else if screen === 'name'}
-				<section class="gate">
+				<section class="gate card">
+					<div class="hero-mark" aria-hidden="true">
+						<svg viewBox="0 0 24 24" width="28" height="28"
+							><path d="M4 17c2.5-6 5.5-9 7.5-6.5s4 3 8.5-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" /></svg
+						>
+					</div>
 					<h1>Welcome to LumoraBoard</h1>
+					<p class="lead">Draw together in real time, with live cursors and private rooms.</p>
 					{#if hasDevLogin || !auth?.enabled}
-						<p>What should others call you?</p>
+						<p class="label">What should others call you?</p>
 						<form class="stack" onsubmit={submitName}>
 							<!-- svelte-ignore a11y_autofocus -->
 							<input bind:value={name} maxlength="32" required autofocus aria-label="Your name" placeholder="Your name" />
@@ -661,16 +678,41 @@
 					{#if formError}<p class="error" role="alert">{formError}</p>{/if}
 				</section>
 			{:else if screen === 'menu'}
-				<section class="gate">
+				<section class="gate card">
 					<h1>Hi {me}</h1>
 					{#if menuStep === 'choose'}
-						<p>Start a board of your own, or join one you were invited to.</p>
-						<div class="providers">
-							<button type="button" class="button primary" onclick={createRoom}>Create a room</button>
-							<button type="button" class="button" onclick={() => ((menuStep = 'join'), (formError = ''))}>Join a room</button>
+						<p class="lead">Start a board of your own, or join one you were invited to.</p>
+						<div class="tiles">
+							<button type="button" class="tile" onclick={createRoom}>
+								<span class="tile-icon create" aria-hidden="true">
+									<svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" /></svg>
+								</span>
+								<span class="tile-text">
+									<strong>Create a room</strong>
+									<small>A new board you own. Invite people to edit or watch.</small>
+								</span>
+							</button>
+							<button type="button" class="tile" onclick={() => ((menuStep = 'join'), (formError = ''))}>
+								<span class="tile-icon join" aria-hidden="true">
+									<svg viewBox="0 0 24 24" width="22" height="22"
+										><path
+											d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"
+											fill="none"
+											stroke="currentColor"
+											stroke-width="2"
+											stroke-linecap="round"
+											stroke-linejoin="round"
+										/></svg
+									>
+								</span>
+								<span class="tile-text">
+									<strong>Join a room</strong>
+									<small>Paste an invite link or type its code.</small>
+								</span>
+							</button>
 						</div>
 					{:else}
-						<p>Paste the invite link you got, or type its code.</p>
+						<p class="lead">Paste the invite link you got, or type its code.</p>
 						<form class="stack" onsubmit={submitJoin}>
 							<!-- svelte-ignore a11y_autofocus -->
 							<input bind:value={joinText} required autofocus aria-label="Invite link or code" placeholder="Link or code, e.g. K7QM-2XRA" />
@@ -681,9 +723,14 @@
 					{#if formError}<p class="error" role="alert">{formError}</p>{/if}
 				</section>
 			{:else if gate}
-				<section class="gate">
+				<section class="gate card">
+					<div class="hero-mark warn" aria-hidden="true">
+						<svg viewBox="0 0 24 24" width="26" height="26"
+							><path d="M7 11V8a5 5 0 0 1 10 0v3M6 11h12v9H6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg
+						>
+					</div>
 					<h1>No access to this room</h1>
-					<p>Ask the room's owner for an invite link or code.</p>
+					<p class="lead">Ask the room's owner for an invite link or code.</p>
 					<div class="providers">
 						<button type="button" class="button primary" onclick={home}>Back to the menu</button>
 					</div>
@@ -741,12 +788,27 @@
 </div>
 
 <style>
+	:global(:root) {
+		--brand: #6366f1;
+		--brand-2: #a855f7;
+		--brand-strong: #4f46e5;
+		--brand-soft: #eef2ff;
+		--brand-grad: linear-gradient(135deg, #6366f1, #a855f7);
+		--ink: #18181b;
+		--ink-2: #52525b;
+		--ink-3: #71717a;
+		--line: #e4e4e7;
+		--surface: #ffffff;
+		--canvas: #f8fafc;
+		--ring: 0 0 0 3px rgba(99, 102, 241, 0.25);
+	}
 	:global(html, body) {
 		margin: 0;
 		height: 100%;
-		font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
-		color: #18181b;
-		background: #fafafa;
+		font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
+		color: var(--ink);
+		background: var(--canvas);
+		-webkit-font-smoothing: antialiased;
 	}
 	.app {
 		display: flex;
@@ -754,17 +816,30 @@
 		height: 100dvh;
 	}
 	header {
+		position: relative;
+		z-index: 5;
 		display: flex;
 		align-items: center;
 		flex-wrap: wrap;
-		gap: 0.5rem 1rem;
-		padding: 0.5rem 1rem;
-		background: white;
-		border-bottom: 1px solid #e4e4e7;
+		gap: 0.5rem 0.75rem;
+		padding: 0.55rem 1rem;
+		background: rgba(255, 255, 255, 0.85);
+		backdrop-filter: blur(10px);
+		border-bottom: 1px solid var(--line);
+		box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 	}
 	.logo {
-		font-size: 1rem;
-		letter-spacing: -0.01em;
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		margin-right: 0.25rem;
+		font-size: 1.05rem;
+		font-weight: 700;
+		letter-spacing: -0.02em;
+	}
+	.mark {
+		flex: none;
+		filter: drop-shadow(0 2px 4px rgba(99, 102, 241, 0.35));
 	}
 	form {
 		display: flex;
@@ -774,28 +849,62 @@
 		width: 8rem;
 		padding: 0.35rem 0.5rem;
 		border: 1px solid #d4d4d8;
-		border-radius: 6px;
+		border-radius: 8px;
 		font: inherit;
 		font-size: 0.9rem;
+		transition:
+			border-color 0.15s,
+			box-shadow 0.15s;
+	}
+	input:focus {
+		outline: none;
+		border-color: var(--brand);
+		box-shadow: var(--ring);
 	}
 	header button {
-		padding: 0.35rem 0.75rem;
-		border: 1px solid #d4d4d8;
-		border-radius: 6px;
-		background: white;
+		padding: 0.4rem 0.85rem;
+		border: 1px solid var(--line);
+		border-radius: 8px;
+		background: var(--surface);
+		color: var(--ink);
 		font: inherit;
-		font-size: 0.9rem;
+		font-size: 0.875rem;
+		font-weight: 500;
 		cursor: pointer;
+		transition:
+			background 0.15s,
+			border-color 0.15s,
+			box-shadow 0.15s;
+	}
+	header button:hover {
+		background: #f4f4f5;
+		border-color: #d4d4d8;
+	}
+	header button:focus-visible,
+	.button:focus-visible,
+	.tile:focus-visible {
+		outline: none;
+		box-shadow: var(--ring);
+	}
+	header button.accent {
+		border-color: transparent;
+		background: var(--brand-grad);
+		color: white;
+		box-shadow: 0 2px 8px rgba(99, 102, 241, 0.35);
+	}
+	header button.accent:hover {
+		filter: brightness(1.06);
 	}
 	.people {
 		display: flex;
 		margin-left: auto;
+		padding-left: 6px;
 	}
 	.avatar {
 		display: grid;
 		place-items: center;
-		width: 28px;
-		height: 28px;
+		width: 30px;
+		height: 30px;
 		margin-left: -6px;
 		border: 2px solid white;
 		border-radius: 50%;
@@ -803,6 +912,7 @@
 		color: white;
 		font-size: 0.75rem;
 		font-weight: 600;
+		box-shadow: 0 1px 3px rgba(15, 23, 42, 0.2);
 	}
 	.status {
 		display: flex;
@@ -811,14 +921,35 @@
 		margin: 0;
 		font-size: 0.8rem;
 	}
+	.status.pill {
+		padding: 0.25rem 0.65rem;
+		border-radius: 999px;
+		background: #f4f4f5;
+	}
+	.status.pill[data-status='open'] {
+		background: #ecfdf5;
+	}
+	.status.pill[data-status='connecting'],
+	.status.pill[data-status='reconnecting'] {
+		background: #fffbeb;
+	}
+	.status.pill[data-status='closed'] {
+		background: #fef2f2;
+	}
 	.status .dot {
 		width: 8px;
 		height: 8px;
 		border-radius: 50%;
 		background: currentColor;
 	}
+	.status.pill[data-status='open'] .dot {
+		box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.18);
+	}
+	.status strong {
+		font-weight: 600;
+	}
 	.muted {
-		color: #71717a;
+		color: var(--ink-3);
 	}
 	main {
 		position: relative;
@@ -831,6 +962,14 @@
 		flex: 1;
 		min-width: 0;
 	}
+	.stage.landing {
+		overflow-y: auto;
+		background:
+			radial-gradient(circle at 15% 10%, rgba(99, 102, 241, 0.16), transparent 45%),
+			radial-gradient(circle at 85% 90%, rgba(168, 85, 247, 0.14), transparent 45%),
+			radial-gradient(circle, rgba(15, 23, 42, 0.07) 1px, transparent 1.5px) 0 0 / 22px 22px,
+			var(--canvas);
+	}
 	.chat-pane {
 		flex: none;
 		width: 320px;
@@ -839,7 +978,9 @@
 		position: relative;
 	}
 	.chat-toggle[aria-pressed='true'] {
-		background: #f4f4f5;
+		background: var(--brand-soft);
+		border-color: #c7d2fe;
+		color: var(--brand-strong);
 	}
 	.badge {
 		position: absolute;
@@ -860,17 +1001,18 @@
 		left: 50%;
 		transform: translateX(-50%);
 		margin: 0;
-		padding: 0.4rem 0.8rem;
-		border-radius: 6px;
+		padding: 0.5rem 0.9rem;
+		border-radius: 10px;
 		font-size: 0.85rem;
+		box-shadow: 0 8px 24px rgba(15, 23, 42, 0.15);
 	}
 	.notice {
 		bottom: 16px;
-		background: #18181b;
+		background: var(--ink);
 		color: white;
 	}
 	.banner {
-		top: 64px;
+		top: 68px;
 		background: #fef3c7;
 		color: #92400e;
 	}
@@ -899,15 +1041,15 @@
 	.menu {
 		position: absolute;
 		right: 0;
-		top: calc(100% + 4px);
+		top: calc(100% + 6px);
 		z-index: 10;
 		display: grid;
 		min-width: 12rem;
-		padding: 4px;
+		padding: 6px;
 		background: white;
-		border: 1px solid #e4e4e7;
-		border-radius: 8px;
-		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+		border: 1px solid var(--line);
+		border-radius: 12px;
+		box-shadow: 0 12px 32px rgba(15, 23, 42, 0.14);
 	}
 	.menu.start {
 		left: 0;
@@ -915,10 +1057,13 @@
 	}
 	.menu button {
 		border: 0;
+		border-radius: 8px;
 		text-align: left;
+		box-shadow: none;
 	}
 	.menu button:hover {
-		background: #f4f4f5;
+		background: var(--brand-soft);
+		color: var(--brand-strong);
 	}
 	.menu button:disabled {
 		color: #a1a1aa;
@@ -937,15 +1082,16 @@
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
-		padding: 0.45rem 0.7rem;
-		border: 1px solid #e4e4e7;
-		border-radius: 8px;
+		padding: 0.5rem 0.8rem;
+		border: 1px solid var(--line);
+		border-radius: 12px;
 		background: white;
-		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+		box-shadow: 0 8px 24px rgba(15, 23, 42, 0.1);
 		font-size: 0.85rem;
 	}
 	.job progress {
 		width: 6rem;
+		accent-color: var(--brand);
 	}
 	.job button {
 		border: 0;
@@ -954,25 +1100,57 @@
 		font: inherit;
 		cursor: pointer;
 	}
+	.job a {
+		color: var(--brand-strong);
+	}
 	.button {
-		padding: 0.35rem 0.75rem;
+		padding: 0.5rem 0.9rem;
 		border: 1px solid #d4d4d8;
-		border-radius: 6px;
+		border-radius: 10px;
 		background: white;
 		color: inherit;
+		font: inherit;
 		font-size: 0.9rem;
+		font-weight: 500;
 		text-decoration: none;
+		cursor: pointer;
+		transition:
+			transform 0.15s,
+			box-shadow 0.15s,
+			filter 0.15s;
 	}
 	.button.primary {
-		background: #18181b;
-		border-color: #18181b;
+		padding: 0.7rem 1rem;
+		border-color: transparent;
+		background: var(--brand-grad);
 		color: white;
-		padding: 0.6rem 1rem;
+		font-weight: 600;
 		text-align: center;
+		box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35);
+	}
+	.button.primary:hover:not(:disabled) {
+		filter: brightness(1.06);
+		transform: translateY(-1px);
+		box-shadow: 0 6px 18px rgba(99, 102, 241, 0.42);
+	}
+	.button.primary:disabled {
+		opacity: 0.55;
+		box-shadow: none;
+		cursor: default;
 	}
 	.quiet {
 		border-color: transparent !important;
-		color: #52525b;
+		background: transparent !important;
+		color: var(--ink-2);
+	}
+	.stage .quiet {
+		font: inherit;
+		font-size: 0.9rem;
+		cursor: pointer;
+	}
+	.quiet:hover {
+		color: var(--ink);
+		background: rgba(15, 23, 42, 0.05) !important;
 	}
 	.gate {
 		max-width: 26rem;
@@ -980,30 +1158,148 @@
 		padding: 0 1rem;
 		text-align: center;
 	}
+	.gate.card {
+		box-sizing: border-box;
+		width: calc(100% - 32px);
+		max-width: 28rem;
+		margin: max(6vh, 24px) auto 24px;
+		padding: 2.25rem 2rem 2rem;
+		background: rgba(255, 255, 255, 0.92);
+		border: 1px solid rgba(228, 228, 231, 0.9);
+		border-radius: 20px;
+		box-shadow:
+			0 1px 2px rgba(15, 23, 42, 0.04),
+			0 20px 50px rgba(15, 23, 42, 0.1);
+		animation: rise 0.35s ease-out;
+	}
+	@keyframes rise {
+		from {
+			opacity: 0;
+			transform: translateY(8px);
+		}
+	}
+	.hero-mark {
+		display: grid;
+		place-items: center;
+		width: 56px;
+		height: 56px;
+		margin: 0 auto 1rem;
+		border-radius: 16px;
+		background: var(--brand-grad);
+		color: white;
+		box-shadow: 0 8px 20px rgba(99, 102, 241, 0.35);
+	}
+	.hero-mark.warn {
+		background: linear-gradient(135deg, #f59e0b, #f43f5e);
+		box-shadow: 0 8px 20px rgba(244, 63, 94, 0.3);
+	}
 	.gate h1 {
-		font-size: 1.3rem;
+		margin: 0;
+		font-size: 1.5rem;
+		font-weight: 700;
+		letter-spacing: -0.02em;
 	}
 	.gate p {
-		color: #52525b;
+		color: var(--ink-2);
+	}
+	.gate .lead {
+		margin: 0.5rem 0 0;
+		line-height: 1.5;
+	}
+	.gate .label {
+		margin: 1.75rem 0 0;
+		font-size: 0.9rem;
+		font-weight: 500;
+		color: var(--ink);
 	}
 	.stack {
 		display: grid;
-		gap: 0.5rem;
-		margin-top: 1.5rem;
+		gap: 0.6rem;
+		margin-top: 1.25rem;
+	}
+	.label + .stack {
+		margin-top: 0.6rem;
 	}
 	.stack input {
 		width: 100%;
 		box-sizing: border-box;
-		padding: 0.6rem 0.75rem;
+		padding: 0.75rem 0.9rem;
+		border-radius: 10px;
 		font-size: 1rem;
+		background: white;
+	}
+	.tiles {
+		display: grid;
+		gap: 0.75rem;
+		margin-top: 1.5rem;
+	}
+	.tile {
+		display: flex;
+		align-items: center;
+		gap: 0.9rem;
+		padding: 1rem;
+		border: 1px solid var(--line);
+		border-radius: 14px;
+		background: white;
+		color: inherit;
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
+		transition:
+			border-color 0.15s,
+			box-shadow 0.15s,
+			transform 0.15s;
+	}
+	.tile:hover {
+		border-color: #c7d2fe;
+		box-shadow: 0 8px 24px rgba(99, 102, 241, 0.15);
+		transform: translateY(-1px);
+	}
+	.tile-icon {
+		flex: none;
+		display: grid;
+		place-items: center;
+		width: 44px;
+		height: 44px;
+		border-radius: 12px;
+	}
+	.tile-icon.create {
+		background: var(--brand-grad);
+		color: white;
+		box-shadow: 0 4px 12px rgba(99, 102, 241, 0.35);
+	}
+	.tile-icon.join {
+		background: var(--brand-soft);
+		color: var(--brand-strong);
+	}
+	.tile-text {
+		display: grid;
+		gap: 0.15rem;
+	}
+	.tile-text strong {
+		font-size: 1rem;
+		font-weight: 600;
+	}
+	.tile-text small {
+		color: var(--ink-3);
+		font-size: 0.85rem;
+		line-height: 1.35;
 	}
 	.error {
+		margin: 1rem 0 0;
+		padding: 0.5rem 0.75rem;
+		border-radius: 8px;
+		background: #fef2f2;
 		color: #b91c1c !important;
+		font-size: 0.9rem;
 	}
 	.room-name {
+		padding: 0.2rem 0.55rem;
+		border-radius: 6px;
+		background: #f4f4f5;
 		font-family: ui-monospace, monospace;
-		font-size: 0.85rem;
-		color: #52525b;
+		font-size: 0.8rem;
+		color: var(--ink-2);
 	}
 	.invites {
 		min-width: 20rem;
@@ -1016,15 +1312,19 @@
 	}
 	.code {
 		white-space: nowrap;
+		padding: 0.2rem 0.5rem;
+		border-radius: 6px;
+		background: var(--brand-soft);
+		color: var(--brand-strong);
 		font-family: ui-monospace, monospace;
 		font-weight: 600;
+		font-size: 0.85rem;
 		letter-spacing: 0.05em;
-		padding-right: 0.5rem;
 	}
 	.hint {
-		margin: 0.25rem 0.5rem 0.25rem;
+		margin: 0.35rem 0.5rem 0.25rem;
 		font-size: 0.8rem;
-		color: #71717a;
+		color: var(--ink-3);
 	}
 	.providers {
 		display: grid;
@@ -1037,22 +1337,33 @@
 		left: 50%;
 		transform: translateX(-50%);
 		margin: 0;
-		padding: 0.35rem 0.8rem;
+		padding: 0.4rem 0.9rem;
 		border-radius: 999px;
-		background: #e0e7ff;
-		color: #3730a3;
+		background: var(--brand-grad);
+		color: white;
 		font-size: 0.85rem;
 		font-weight: 600;
+		box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35);
 	}
 	@media (max-width: 640px) {
 		header {
-			padding: 0.4rem 0.75rem;
+			gap: 0.4rem 0.5rem;
+			padding: 0.45rem 0.75rem;
+		}
+		header:has(.room-name) .wordmark {
+			display: none;
+		}
+		header button {
+			padding: 0.35rem 0.65rem;
 		}
 		input {
 			width: 6rem;
 		}
 		.status .muted {
 			display: none;
+		}
+		.gate.card {
+			padding: 1.75rem 1.25rem 1.5rem;
 		}
 		.chat-pane {
 			position: absolute;

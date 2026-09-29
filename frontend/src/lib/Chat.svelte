@@ -215,7 +215,7 @@
 		text-align: left;
 	}
 	.mine .text {
-		background: #18181b;
+		background: linear-gradient(135deg, #6366f1, #8b5cf6);
 		color: white;
 	}
 	.ref {
@@ -292,17 +292,23 @@
 		max-height: 8rem;
 		padding: 0.45rem 0.55rem;
 		border: 1px solid #d4d4d8;
-		border-radius: 8px;
+		border-radius: 10px;
 		font: inherit;
 		resize: none;
 		field-sizing: content;
+	}
+	textarea:focus {
+		outline: none;
+		border-color: #6366f1;
+		box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
 	}
 	.row button {
 		padding: 0.45rem 0.8rem;
 		border: 0;
 		border-radius: 8px;
-		background: #18181b;
+		background: linear-gradient(135deg, #6366f1, #8b5cf6);
 		color: white;
+		font-weight: 600;
 		font: inherit;
 		cursor: pointer;
 	}
