@@ -242,8 +242,19 @@ func (h *Hub) Join(ctx context.Context, room string, c *Client, since uint64) (*
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	res := <-req.reply
-	return res.room, res.err
+	select {
+	case res := <-req.reply:
+		return res.room, res.err
+	case <-ctx.Done():
+		// The room may still admit the client; take it back out so no
+		// ghost member stays behind.
+		go func() {
+			if res := <-req.reply; res.room != nil {
+				res.room.Leave(c)
+			}
+		}()
+		return nil, ctx.Err()
+	}
 }
 
 // SlowDrops reports how many clients rooms have dropped for not keeping up.

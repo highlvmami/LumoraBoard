@@ -199,7 +199,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	client := room.NewClient(newClientID(), h.cfg.SendBuffer).
 		WithName(id.Name).
 		WithAccount(id.User, id.Avatar, id.Role)
-	rm, err := h.hub.Join(ctx, name, client, since)
+	h.log.Info("joining room", "room", name, "user", id.User)
+	// Bounded like authorizing: a board that cannot load must end in a
+	// logged error and a retry, not a socket that never says hello.
+	jctx, jcancel := context.WithTimeout(ctx, 3*h.cfg.HandshakeTimeout)
+	rm, err := h.hub.Join(jctx, name, client, since)
+	jcancel()
 	if err != nil {
 		// 1013: the client's backoff retries, which is right for both a
 		// stopping hub and a board the store could not load yet.

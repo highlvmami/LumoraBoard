@@ -107,10 +107,15 @@ export function connectRoom(room: string, events: RoomEvents, opts: ConnectOptio
 	let closed = false;
 	let attempt = 0;
 	let timer: ReturnType<typeof setTimeout> | null = null;
+	// Why the previous socket ended, kept on screen while retrying.
+	let lastClose = '';
 
 	function open() {
 		const since = opts.since?.() ?? 0;
-		events.onState(attempt === 0 ? 'connecting' : 'reconnecting', attempt === 0 ? undefined : `attempt ${attempt}`);
+		events.onState(
+			attempt === 0 ? 'connecting' : 'reconnecting',
+			attempt === 0 ? undefined : `attempt ${attempt}${lastClose ? `, last close ${lastClose}` : ''}`
+		);
 		const s = createSocket(roomSocketUrl(room, since, globalThis.location, opts.name));
 		socket = s;
 		// A handshake can hang (a proxy or the server stuck); without this
@@ -121,13 +126,22 @@ export function connectRoom(room: string, events: RoomEvents, opts: ConnectOptio
 			s.close();
 		}, handshakeTimeout);
 
+		let helloTimer: ReturnType<typeof setTimeout> | undefined;
+		let noHello = false;
 		s.onopen = () => {
 			clearTimeout(handshake);
+			// The server greets every join with hello; without it the
+			// socket is useless, so give up and retry rather than sit idle.
+			helloTimer = setTimeout(() => {
+				noHello = true;
+				s.close();
+			}, handshakeTimeout);
 			attempt = 0;
 			events.onState('open');
 		};
 		s.onmessage = (e) => {
 			const env = parseEnvelope(String(e.data));
+			if (env?.type === 'hello') clearTimeout(helloTimer);
 			if (env) events.onMessage(env);
 		};
 		s.onerror = () => {
@@ -135,9 +149,17 @@ export function connectRoom(room: string, events: RoomEvents, opts: ConnectOptio
 		};
 		s.onclose = (e) => {
 			clearTimeout(handshake);
+			clearTimeout(helloTimer);
 			if (socket !== s) return;
 			socket = null;
-			const detail = stalled ? 'no answer from server' : e.reason ? `${e.code} ${e.reason}` : `${e.code}`;
+			const detail = stalled
+				? 'no answer from server'
+				: noHello
+					? 'server did not answer join'
+					: e.reason
+						? `${e.code} ${e.reason}`
+						: `${e.code}`;
+			lastClose = detail;
 			if (closed || FATAL_CLOSE_CODES.has(e.code)) {
 				events.onState('closed', detail, e.code);
 				return;
