@@ -395,6 +395,8 @@ var ErrReadOnly = errors.New("read-only: your role cannot change this board")
 // from the store. Retrying later may succeed.
 var ErrLoadFailed = errors.New("room: could not load board")
 
+const loadAttemptTimeout = 10 * time.Second
+
 // startLoad reads the board from the store on its own goroutine, with a
 // few quick retries, so that a slow database delays only this room's
 // joiners and never the room's other work or the hub.
@@ -407,7 +409,11 @@ func (r *Room) startLoad(ctx context.Context, wg *sync.WaitGroup) {
 		var res loadResult
 		backoff := 100 * time.Millisecond
 		for attempt := 1; attempt <= 3; attempt++ {
-			res.data, res.err = r.hub.cfg.Store.Load(ctx, r.name)
+			// Bounded per attempt: a connection the database dropped
+			// silently must not leave joiners waiting forever.
+			actx, cancel := context.WithTimeout(ctx, loadAttemptTimeout)
+			res.data, res.err = r.hub.cfg.Store.Load(actx, r.name)
+			cancel()
 			if res.err == nil || ctx.Err() != nil {
 				break
 			}
