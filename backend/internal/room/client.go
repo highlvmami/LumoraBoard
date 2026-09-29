@@ -73,6 +73,12 @@ func (c *Client) close(reason CloseReason) {
 	})
 }
 
+// Deliver queues a message for this client from outside the room, such as
+// a reject the transport produces while decoding. It never blocks; a false
+// result means the outbox is full and the room will drop the client on its
+// next broadcast anyway.
+func (c *Client) Deliver(msg []byte) bool { return c.trySend(msg) }
+
 // trySend queues msg without blocking. It reports false when the outbox is
 // full, which is the room's cue to drop the client.
 func (c *Client) trySend(msg []byte) bool {

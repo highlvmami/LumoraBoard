@@ -19,11 +19,14 @@ type Config struct {
 	InboundBuffer int
 	// IdleTimeout is how long an empty room lingers before it is retired.
 	IdleTimeout time.Duration
+	// OpLogSize is how many recent ops a room keeps for reconnecting
+	// clients; a client further behind than that gets a full snapshot.
+	OpLogSize int
 }
 
 // DefaultConfig is what the server uses unless told otherwise.
 func DefaultConfig() Config {
-	return Config{InboundBuffer: 256, IdleTimeout: time.Minute}
+	return Config{InboundBuffer: 256, IdleTimeout: time.Minute, OpLogSize: 2000}
 }
 
 // Hub owns the room table. Like a room it is a single goroutine: joins and
@@ -46,6 +49,7 @@ type Hub struct {
 type hubJoin struct {
 	room   string
 	client *Client
+	since  uint64
 	reply  chan hubJoinResult
 }
 
@@ -95,7 +99,7 @@ func (h *Hub) Run(ctx context.Context) error {
 			// Forward to the room. Its joinCh is buffered and the room
 			// drains it in its select loop, so this cannot deadlock.
 			reply := make(chan error, 1)
-			rm.joinCh <- joinReq{client: req.client, reply: reply}
+			rm.joinCh <- joinReq{client: req.client, since: req.since, reply: reply}
 			req.reply <- hubJoinResult{room: rm, err: <-reply}
 
 		case req := <-h.retireCh:
@@ -114,9 +118,10 @@ func (h *Hub) Run(ctx context.Context) error {
 }
 
 // Join adds c to the named room, creating the room if needed, and returns
-// the room handle the client uses for Submit and Leave.
-func (h *Hub) Join(ctx context.Context, room string, c *Client) (*Room, error) {
-	req := hubJoin{room: room, client: c, reply: make(chan hubJoinResult, 1)}
+// the room handle the client uses for Submit and Leave. since is the last
+// seq the client saw on a previous connection, or 0 for a fresh join.
+func (h *Hub) Join(ctx context.Context, room string, c *Client, since uint64) (*Room, error) {
+	req := hubJoin{room: room, client: c, since: since, reply: make(chan hubJoinResult, 1)}
 	select {
 	case h.joinCh <- req:
 	case <-h.closed:
