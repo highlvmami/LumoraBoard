@@ -13,6 +13,7 @@ import (
 
 	"go.uber.org/goleak"
 
+	"github.com/highlvmami/lumoraboard/backend/internal/board"
 	"github.com/highlvmami/lumoraboard/backend/internal/proto"
 )
 
@@ -37,11 +38,28 @@ func startHub(t *testing.T, cfg Config) *Hub {
 }
 
 func testCfg() Config {
-	return Config{InboundBuffer: 8, IdleTimeout: time.Hour}
+	return Config{InboundBuffer: 8, IdleTimeout: time.Hour, OpLogSize: 100}
 }
 
-func op(id string) proto.Envelope {
-	return proto.Envelope{V: proto.Version, Type: proto.TypeOp, ClientOpID: id, Payload: json.RawMessage(`{"x":1}`)}
+// addOp builds an envelope that adds a rect whose object id is the op id.
+func addOp(id string) proto.Envelope {
+	payload := fmt.Sprintf(`{"kind":"add","id":%q,"object":{"id":%q,"kind":"rect","x":1,"y":1}}`, id, id)
+	return proto.Envelope{V: proto.Version, Type: proto.TypeOp, ClientOpID: id, Payload: json.RawMessage(payload)}
+}
+
+// rawOp builds an op envelope from a payload literal.
+func rawOp(clientOpID, payload string) proto.Envelope {
+	return proto.Envelope{V: proto.Version, Type: proto.TypeOp, ClientOpID: clientOpID, Payload: json.RawMessage(payload)}
+}
+
+// submit decodes the envelope's payload the way the transport does, then
+// hands it to the room.
+func submit(ctx context.Context, rm *Room, c *Client, env proto.Envelope) error {
+	op, err := board.DecodeOp(env.Payload)
+	if err != nil {
+		return err
+	}
+	return rm.Submit(ctx, c, env, op)
 }
 
 // recv reads the next message of the given type, skipping presence noise.
@@ -71,11 +89,11 @@ func TestHelloCarriesMembers(t *testing.T) {
 	ctx := context.Background()
 
 	a := NewClient("a", 16)
-	if _, err := h.Join(ctx, "r", a); err != nil {
+	if _, err := h.Join(ctx, "r", a, 0); err != nil {
 		t.Fatal(err)
 	}
 	b := NewClient("b", 16)
-	if _, err := h.Join(ctx, "r", b); err != nil {
+	if _, err := h.Join(ctx, "r", b, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -98,14 +116,14 @@ func TestFanOutStampsSeqAndFrom(t *testing.T) {
 	clients := []*Client{NewClient("a", 16), NewClient("b", 16), NewClient("c", 16)}
 	var rm *Room
 	for _, c := range clients {
-		r, err := h.Join(ctx, "r", c)
+		r, err := h.Join(ctx, "r", c, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
 		rm = r
 	}
 
-	if err := rm.Submit(ctx, clients[1], op("op-1")); err != nil {
+	if err := submit(ctx, rm, clients[1], addOp("op-1")); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range clients {
@@ -127,7 +145,7 @@ func TestSeqIsTotalOrderUnderConcurrency(t *testing.T) {
 	var rm *Room
 	for i := range clients {
 		clients[i] = NewClient(fmt.Sprint(i), nClients*nOps+nClients*2)
-		r, err := h.Join(ctx, "r", clients[i])
+		r, err := h.Join(ctx, "r", clients[i], 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -140,7 +158,7 @@ func TestSeqIsTotalOrderUnderConcurrency(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := range nOps {
-				if err := rm.Submit(ctx, c, op(fmt.Sprintf("%s-%d", c.ID(), i))); err != nil {
+				if err := submit(ctx, rm, c, addOp(fmt.Sprintf("c%s-%d", c.ID(), i))); err != nil {
 					t.Error(err)
 					return
 				}
@@ -177,17 +195,17 @@ func TestSlowConsumerIsDroppedNotWaitedFor(t *testing.T) {
 
 	fast := NewClient("fast", 64)
 	slow := NewClient("slow", 1) // holds only its hello
-	rm, err := h.Join(ctx, "r", fast)
+	rm, err := h.Join(ctx, "r", fast, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.Join(ctx, "r", slow); err != nil {
+	if _, err := h.Join(ctx, "r", slow, 0); err != nil {
 		t.Fatal(err)
 	}
 
 	// Two ops: the first overflows slow's outbox and gets it dropped.
 	for i := range 2 {
-		if err := rm.Submit(ctx, fast, op(fmt.Sprint(i))); err != nil {
+		if err := submit(ctx, rm, fast, addOp(fmt.Sprint("o", i))); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -213,7 +231,7 @@ func TestSlowConsumerIsDroppedNotWaitedFor(t *testing.T) {
 	}
 
 	// Submitting on a dropped client fails instead of hanging.
-	if err := rm.Submit(ctx, slow, op("late")); !errors.Is(err, ErrRoomClosed) {
+	if err := submit(ctx, rm, slow, addOp("late")); !errors.Is(err, ErrRoomClosed) {
 		t.Fatalf("Submit after drop = %v, want ErrRoomClosed", err)
 	}
 }
@@ -225,7 +243,7 @@ func TestIdleRoomIsRetiredAndRecreated(t *testing.T) {
 	ctx := context.Background()
 
 	a := NewClient("a", 16)
-	rm, err := h.Join(ctx, "r", a)
+	rm, err := h.Join(ctx, "r", a, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +274,7 @@ func TestIdleRoomIsRetiredAndRecreated(t *testing.T) {
 
 	// Joining again after retirement creates a fresh room with seq reset.
 	b := NewClient("b", 16)
-	rm2, err := h.Join(ctx, "r", b)
+	rm2, err := h.Join(ctx, "r", b, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +297,7 @@ func TestShutdownClosesEveryClient(t *testing.T) {
 
 	clients := []*Client{NewClient("a", 4), NewClient("b", 4)}
 	for i, c := range clients {
-		if _, err := h.Join(ctx, fmt.Sprint("room", i), c); err != nil {
+		if _, err := h.Join(ctx, fmt.Sprint("room", i), c, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -300,7 +318,226 @@ func TestShutdownClosesEveryClient(t *testing.T) {
 			t.Fatalf("client %s still open after shutdown", c.ID())
 		}
 	}
-	if _, err := h.Join(context.Background(), "r", NewClient("late", 1)); !errors.Is(err, ErrHubClosed) {
+	if _, err := h.Join(context.Background(), "r", NewClient("late", 1), 0); !errors.Is(err, ErrHubClosed) {
 		t.Fatalf("Join after shutdown = %v, want ErrHubClosed", err)
+	}
+}
+
+func hello(t *testing.T, c *Client) proto.Hello {
+	t.Helper()
+	var h proto.Hello
+	if err := json.Unmarshal(recv(t, c, proto.TypeHello).Payload, &h); err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+func objects(t *testing.T, raw json.RawMessage) []board.Object {
+	t.Helper()
+	var objs []board.Object
+	if err := json.Unmarshal(raw, &objs); err != nil {
+		t.Fatal(err)
+	}
+	return objs
+}
+
+func TestRejectGoesToSenderOnly(t *testing.T) {
+	h := startHub(t, testCfg())
+	ctx := context.Background()
+
+	a := NewClient("a", 16)
+	b := NewClient("b", 16)
+	rm, _ := h.Join(ctx, "r", a, 0)
+	if _, err := h.Join(ctx, "r", b, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := submit(ctx, rm, a, rawOp("bad", `{"kind":"delete","id":"missing"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := submit(ctx, rm, a, addOp("ok")); err != nil {
+		t.Fatal(err)
+	}
+
+	rej := recv(t, a, proto.TypeReject)
+	var payload proto.Reject
+	if err := json.Unmarshal(rej.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.ClientOpID != "bad" || payload.Reason == "" {
+		t.Fatalf("reject = %+v", payload)
+	}
+	// The rejected op consumed no seq: the next accepted op is seq 1.
+	if got := recv(t, a, proto.TypeOp); got.Seq != 1 {
+		t.Fatalf("seq after reject = %d, want 1", got.Seq)
+	}
+	// b only ever sees the accepted op.
+	if got := recv(t, b, proto.TypeOp); got.ClientOpID != "ok" {
+		t.Fatalf("b got %+v", got)
+	}
+	select {
+	case raw := <-b.Outbox():
+		t.Fatalf("b received an extra message: %s", raw)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestLateJoinerGetsSnapshot(t *testing.T) {
+	h := startHub(t, testCfg())
+	ctx := context.Background()
+
+	a := NewClient("a", 16)
+	rm, _ := h.Join(ctx, "r", a, 0)
+	if objs := objects(t, hello(t, a).Objects); len(objs) != 0 {
+		t.Fatalf("fresh room snapshot has %d objects", len(objs))
+	}
+	for _, id := range []string{"r1", "r2"} {
+		if err := submit(ctx, rm, a, addOp(id)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := submit(ctx, rm, a, rawOp("u", `{"kind":"update","id":"r1","patch":{"x":42}}`)); err != nil {
+		t.Fatal(err)
+	}
+	recv(t, a, proto.TypeOp)
+	recv(t, a, proto.TypeOp)
+	recv(t, a, proto.TypeOp)
+
+	b := NewClient("b", 16)
+	if _, err := h.Join(ctx, "r", b, 0); err != nil {
+		t.Fatal(err)
+	}
+	hb := hello(t, b)
+	objs := objects(t, hb.Objects)
+	if hb.Seq != 3 || hb.Resume || len(objs) != 2 {
+		t.Fatalf("hello = seq %d resume %v objects %d", hb.Seq, hb.Resume, len(objs))
+	}
+	if objs[0].ID != "r1" || objs[0].X != 42 || objs[0].Version != 3 || objs[0].CreatedBy != "a" {
+		t.Fatalf("snapshot object = %+v", objs[0])
+	}
+}
+
+func TestReconnectResumesFromSeq(t *testing.T) {
+	cfg := testCfg()
+	cfg.OpLogSize = 3
+	h := startHub(t, cfg)
+	ctx := context.Background()
+
+	a := NewClient("a", 64)
+	rm, _ := h.Join(ctx, "r", a, 0)
+	hello(t, a)
+	for i := range 5 {
+		if err := submit(ctx, rm, a, addOp(fmt.Sprint("o", i))); err != nil {
+			t.Fatal(err)
+		}
+		recv(t, a, proto.TypeOp)
+	}
+
+	// Seen up to 3, missed 4 and 5: both are still in a log of size 3.
+	b := NewClient("b", 16)
+	if _, err := h.Join(ctx, "r", b, 3); err != nil {
+		t.Fatal(err)
+	}
+	hb := hello(t, b)
+	if !hb.Resume || hb.Objects != nil || hb.Seq != 5 {
+		t.Fatalf("resume hello = %+v", hb)
+	}
+	for _, want := range []uint64{4, 5} {
+		if got := recv(t, b, proto.TypeOp); got.Seq != want {
+			t.Fatalf("replayed seq %d, want %d", got.Seq, want)
+		}
+	}
+
+	// Seen only up to 1: op 2 fell out of the log, so a snapshot it is.
+	c := NewClient("c", 16)
+	if _, err := h.Join(ctx, "r", c, 1); err != nil {
+		t.Fatal(err)
+	}
+	hc := hello(t, c)
+	if hc.Resume || len(objects(t, hc.Objects)) != 5 {
+		t.Fatalf("stale hello = resume %v objects %s", hc.Resume, hc.Objects)
+	}
+
+	// Caught up exactly: resume with nothing to replay.
+	d := NewClient("d", 16)
+	if _, err := h.Join(ctx, "r", d, 5); err != nil {
+		t.Fatal(err)
+	}
+	if hd := hello(t, d); !hd.Resume {
+		t.Fatalf("exact hello = %+v", hd)
+	}
+
+	// Claims a seq from the future (a retired room restarted at 0): snapshot.
+	e := NewClient("e", 16)
+	if _, err := h.Join(ctx, "r", e, 99); err != nil {
+		t.Fatal(err)
+	}
+	if he := hello(t, e); he.Resume {
+		t.Fatalf("future hello = %+v", he)
+	}
+}
+
+// Two clients hammer the same object concurrently. Whatever interleaving
+// the room picks, a third client joining afterwards must see exactly the
+// state that replaying the broadcast stream produces on either client.
+func TestConcurrentUpdatesConverge(t *testing.T) {
+	const nOps = 100
+	h := startHub(t, testCfg())
+	ctx := context.Background()
+
+	a := NewClient("a", 4*nOps)
+	b := NewClient("b", 4*nOps)
+	rm, _ := h.Join(ctx, "r", a, 0)
+	if _, err := h.Join(ctx, "r", b, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := submit(ctx, rm, a, addOp("shared")); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	for _, c := range []*Client{a, b} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range nOps {
+				patch := fmt.Sprintf(`{"kind":"update","id":"shared","patch":{"x":%d,"text":%q}}`, i, c.ID())
+				if err := submit(ctx, rm, c, rawOp(fmt.Sprintf("%s-%d", c.ID(), i), patch)); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	replay := func(c *Client) board.Object {
+		st := board.NewState()
+		for seq := uint64(1); seq <= 2*nOps+1; seq++ {
+			env := recv(t, c, proto.TypeOp)
+			op, err := board.DecodeOp(env.Payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := st.Apply(op, env.Seq, env.From); err != nil {
+				t.Fatal(err)
+			}
+		}
+		o, _ := st.Get("shared")
+		return o
+	}
+	fromA, fromB := replay(a), replay(b)
+
+	late := NewClient("late", 16)
+	if _, err := h.Join(ctx, "r", late, 0); err != nil {
+		t.Fatal(err)
+	}
+	server := objects(t, hello(t, late).Objects)[0]
+
+	if fmt.Sprint(fromA) != fmt.Sprint(fromB) || fmt.Sprint(fromA) != fmt.Sprint(server) {
+		t.Fatalf("diverged:\n a: %+v\n b: %+v\n server: %+v", fromA, fromB, server)
+	}
+	if server.Version != 2*nOps+1 {
+		t.Fatalf("last writer version = %d, want %d", server.Version, 2*nOps+1)
 	}
 }
