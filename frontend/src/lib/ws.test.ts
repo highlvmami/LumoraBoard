@@ -154,10 +154,17 @@ describe('connectRoom', () => {
 		expect(details.at(-1)).toMatch(/^no answer from server/);
 		vi.advanceTimersByTime(100);
 		expect(FakeSocket.instances).toHaveLength(2);
-		// An opened socket is never cut by the handshake timer.
+		// An open socket that never gets a hello is retried too.
 		FakeSocket.instances[1].open();
+		vi.advanceTimersByTime(5000);
+		expect(details.at(-1)).toMatch(/^server did not answer join/);
+		vi.advanceTimersByTime(100);
+		expect(FakeSocket.instances).toHaveLength(3);
+		// Once hello arrives, nothing cuts the socket.
+		FakeSocket.instances[2].open();
+		FakeSocket.instances[2].onmessage?.({ data: JSON.stringify({ v: 1, type: 'hello', payload: {} }) });
 		vi.advanceTimersByTime(60_000);
-		expect(FakeSocket.instances).toHaveLength(2);
+		expect(FakeSocket.instances).toHaveLength(3);
 		conn.close();
 	});
 

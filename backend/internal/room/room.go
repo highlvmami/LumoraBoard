@@ -407,6 +407,11 @@ func (r *Room) startLoad(ctx context.Context, wg *sync.WaitGroup) {
 	go func() {
 		defer wg.Done()
 		var res loadResult
+		start := time.Now()
+		r.log.Info("loading board")
+		defer func() {
+			r.log.Info("board load finished", "took", time.Since(start).Round(time.Millisecond).String(), "err", res.err)
+		}()
 		backoff := 100 * time.Millisecond
 		for attempt := 1; attempt <= 3; attempt++ {
 			// Bounded per attempt: a connection the database dropped
