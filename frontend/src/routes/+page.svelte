@@ -6,7 +6,7 @@
 	import { BoardStore, canEdit, sorted, type BoardObject, type Op, type Point, type Role } from '$lib/board';
 	import { colorFor, displayName, Presence, throttle } from '$lib/presence';
 	import { CLOSE_FORBIDDEN, CLOSE_UNAUTHORIZED, connectRoom, type ConnectionState, type RoomConnection } from '$lib/ws';
-	import { acceptInvite, createInvite, fetchAuthStatus, loginUrl, logout, type AuthStatus } from '$lib/auth';
+	import { acceptInvite, checkAccess, createInvite, fetchAuthStatus, loginUrl, logout, type AuthStatus } from '$lib/auth';
 	import Whiteboard, { type RemoteCursor } from '$lib/Whiteboard.svelte';
 	import Chat from '$lib/Chat.svelte';
 	import { ChatStore, fetchOlder, typingLabel } from '$lib/chat';
@@ -320,9 +320,23 @@
 		clearInterval(jobPoll);
 	});
 
-	function connect() {
+	async function connect() {
 		conn?.close();
+		conn = null;
 		gate = '';
+		// Asked over HTTP first: a refused socket's close code does not
+		// always make it through the host's proxy.
+		const target = room;
+		const access = await checkAccess(target);
+		if (room !== target || conn) return; // another connect() took over
+		if (access === 'signin') {
+			gate = 'signin';
+			return;
+		}
+		if (access === 'forbidden') {
+			gate = 'forbidden';
+			return;
+		}
 		store = newStore();
 		presence = new Presence();
 		chat = new ChatStore();
@@ -380,6 +394,16 @@
 		} catch {
 			// See onMount.
 		}
+		const url = new URL(page.url);
+		url.searchParams.set('room', room);
+		replaceState(url, page.state);
+		connect();
+	}
+
+	/** Opens a fresh board under a random name; the opener owns it. */
+	function newBoard() {
+		const bytes = crypto.getRandomValues(new Uint8Array(4));
+		room = roomInput = 'board-' + Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 		const url = new URL(page.url);
 		url.searchParams.set('room', room);
 		replaceState(url, page.state);
@@ -519,7 +543,10 @@
 						</div>
 					{:else}
 						<h1>No access to “{room}”</h1>
-						<p>Ask the board's owner for an invite link, or open another board from the box above.</p>
+						<p>Ask the board's owner for an invite link, or start a board of your own.</p>
+						<div class="providers">
+							<button type="button" class="button primary" onclick={newBoard}>Start a new board</button>
+						</div>
 					{/if}
 				</section>
 			{:else}
