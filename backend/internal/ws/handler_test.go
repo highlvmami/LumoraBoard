@@ -3,6 +3,7 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -28,7 +29,7 @@ type fixture struct {
 func newFixture(t *testing.T, cfg Config) fixture {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	hub := room.NewHub(room.Config{InboundBuffer: 8, IdleTimeout: time.Hour}, log)
+	hub := room.NewHub(room.Config{InboundBuffer: 8, IdleTimeout: time.Hour, OpLogSize: 100}, log)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	hubDone := make(chan struct{})
@@ -115,7 +116,7 @@ func TestTwoClientsExchangeOps(t *testing.T) {
 		t.Fatalf("b's hello lists %d members, want 1", len(hb.Members))
 	}
 
-	send(t, a, `{"v":1,"type":"op","clientOpId":"x","payload":{"k":"stroke"}}`)
+	send(t, a, `{"v":1,"type":"op","clientOpId":"x","payload":{"kind":"add","id":"r1","object":{"id":"r1","kind":"rect"}}}`)
 	for name, c := range map[string]*websocket.Conn{"a": a, "b": b} {
 		got := read(t, c, proto.TypeOp)
 		if got.Seq != 1 || got.ClientOpID != "x" || got.From == "" {
@@ -131,7 +132,7 @@ func TestRoomsAreIsolated(t *testing.T) {
 	read(t, a, proto.TypeHello)
 	read(t, b, proto.TypeHello)
 
-	send(t, a, `{"v":1,"type":"op","clientOpId":"x"}`)
+	send(t, a, `{"v":1,"type":"op","clientOpId":"x","payload":{"kind":"add","id":"r1","object":{"id":"r1","kind":"rect"}}}`)
 	read(t, a, proto.TypeOp)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -156,6 +157,55 @@ func TestBadEnvelopeClosesConnection(t *testing.T) {
 	}
 	if websocket.CloseStatus(err) != websocket.StatusUnsupportedData {
 		t.Fatalf("close status = %v (%v), want UnsupportedData", websocket.CloseStatus(err), err)
+	}
+}
+
+func TestMalformedOpIsRejectedNotDisconnected(t *testing.T) {
+	f := newFixture(t, DefaultConfig())
+	a := dial(t, f, "r1")
+	read(t, a, proto.TypeHello)
+
+	send(t, a, `{"v":1,"type":"op","clientOpId":"bad","payload":{"kind":"explode","id":"x"}}`)
+	rej := read(t, a, proto.TypeReject)
+	if rej.ClientOpID != "bad" {
+		t.Fatalf("reject = %+v", rej)
+	}
+
+	// Still connected: a valid op goes through.
+	send(t, a, `{"v":1,"type":"op","clientOpId":"ok","payload":{"kind":"add","id":"r1","object":{"id":"r1","kind":"rect"}}}`)
+	if got := read(t, a, proto.TypeOp); got.Seq != 1 {
+		t.Fatalf("op after reject = %+v", got)
+	}
+}
+
+func TestSinceQueryResumes(t *testing.T) {
+	f := newFixture(t, DefaultConfig())
+	a := dial(t, f, "r1")
+	read(t, a, proto.TypeHello)
+	send(t, a, `{"v":1,"type":"op","clientOpId":"1","payload":{"kind":"add","id":"r1","object":{"id":"r1","kind":"rect"}}}`)
+	send(t, a, `{"v":1,"type":"op","clientOpId":"2","payload":{"kind":"add","id":"r2","object":{"id":"r2","kind":"rect"}}}`)
+	read(t, a, proto.TypeOp)
+	read(t, a, proto.TypeOp)
+
+	b := dial(t, f, "r1&since=1")
+	hello := read(t, b, proto.TypeHello)
+	var h proto.Hello
+	if err := json.Unmarshal(hello.Payload, &h); err != nil {
+		t.Fatal(err)
+	}
+	if !h.Resume {
+		t.Fatalf("hello = %+v, want resume", h)
+	}
+	if got := read(t, b, proto.TypeOp); got.Seq != 2 || got.ClientOpID != "2" {
+		t.Fatalf("replayed %+v", got)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, resp, err := websocket.Dial(ctx, f.url+"/ws?room=r1&since=abc", nil); err == nil || resp == nil || resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad since accepted: err=%v resp=%v", err, resp)
+	} else {
+		_ = resp.Body.Close()
 	}
 }
 
@@ -206,10 +256,18 @@ func TestSlowConsumerGetsPolicyViolation(t *testing.T) {
 		<-drained
 	})
 
-	// slow never reads again. Its write pump moves a message or two into
-	// the kernel buffer, then the room finds the outbox full and drops it.
-	for range 200 {
-		send(t, sender, `{"v":1,"type":"op","clientOpId":"x"}`)
+	// slow never reads again. Its write pump keeps writing until the
+	// kernel socket buffers fill; from then on it blocks, the one-slot
+	// outbox overflows on the next broadcast and the room drops it. Big
+	// ops get there quickly whatever the buffer sizes are.
+	points := strings.Repeat(`{"x":123456.5,"y":654321.5},`, 299) + `{"x":1,"y":1}`
+	deadline := time.Now().Add(10 * time.Second)
+	for i := 0; f.hub.SlowDrops() == 0; i++ {
+		if time.Now().After(deadline) {
+			t.Fatal("slow consumer was never dropped")
+		}
+		// A fresh stroke each time, so every op is accepted and broadcast.
+		send(t, sender, fmt.Sprintf(`{"v":1,"type":"op","clientOpId":"x","payload":{"kind":"add","id":"s%d","object":{"id":"s%d","kind":"stroke","points":[%s]}}}`, i, i, points))
 	}
 
 	select {
@@ -218,7 +276,7 @@ func TestSlowConsumerGetsPolicyViolation(t *testing.T) {
 			t.Fatal("left notice has no from")
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("slow consumer was never dropped")
+		t.Fatal("sender was not told the slow client left")
 	}
 	if f.hub.SlowDrops() != 1 {
 		t.Fatalf("SlowDrops = %d, want 1", f.hub.SlowDrops())

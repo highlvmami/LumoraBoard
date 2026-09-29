@@ -25,6 +25,8 @@ const (
 	// TypeJoined and TypeLeft announce membership changes to the room.
 	TypeJoined = "joined"
 	TypeLeft   = "left"
+	// TypeReject tells the sender that one of its ops was not applied.
+	TypeReject = "reject"
 	// TypeError is sent before the server closes a misbehaving connection.
 	TypeError = "error"
 )
@@ -41,10 +43,22 @@ type Envelope struct {
 }
 
 // Hello is the payload of a TypeHello message.
+//
+// When Resume is true the client asked to continue from a seq the room
+// still has in its log: Objects is omitted and the missed ops follow as
+// ordinary op messages. Otherwise Objects is the full board at Seq.
 type Hello struct {
-	ClientID string   `json:"clientId"`
-	Seq      uint64   `json:"seq"`
-	Members  []string `json:"members"`
+	ClientID string          `json:"clientId"`
+	Seq      uint64          `json:"seq"`
+	Members  []string        `json:"members"`
+	Resume   bool            `json:"resume,omitempty"`
+	Objects  json.RawMessage `json:"objects,omitempty"`
+}
+
+// Reject is the payload of a TypeReject message.
+type Reject struct {
+	ClientOpID string `json:"clientOpId"`
+	Reason     string `json:"reason"`
 }
 
 // ErrorPayload is the payload of a TypeError message.

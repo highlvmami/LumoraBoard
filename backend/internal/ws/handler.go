@@ -6,14 +6,17 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/coder/websocket"
 
+	"github.com/highlvmami/lumoraboard/backend/internal/board"
 	"github.com/highlvmami/lumoraboard/backend/internal/proto"
 	"github.com/highlvmami/lumoraboard/backend/internal/room"
 )
@@ -58,13 +61,23 @@ func NewHandler(hub *room.Hub, cfg Config, log *slog.Logger) *Handler {
 	return &Handler{hub: hub, cfg: cfg, log: log}
 }
 
-// ServeHTTP expects ?room=<name> and serves the connection until either
-// side closes it.
+// ServeHTTP expects ?room=<name> and optionally &since=<seq> (the last seq
+// a reconnecting client saw), and serves the connection until either side
+// closes it.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("room")
 	if !roomNameRe.MatchString(name) {
 		http.Error(w, "room must match "+roomNameRe.String(), http.StatusBadRequest)
 		return
+	}
+	var since uint64
+	if raw := r.URL.Query().Get("since"); raw != "" {
+		v, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			http.Error(w, "since must be a non-negative integer", http.StatusBadRequest)
+			return
+		}
+		since = v
 	}
 
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: h.cfg.OriginPatterns})
@@ -78,7 +91,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	client := room.NewClient(newClientID(), h.cfg.SendBuffer)
-	rm, err := h.hub.Join(ctx, name, client)
+	rm, err := h.hub.Join(ctx, name, client, since)
 	if err != nil {
 		_ = conn.Close(websocket.StatusTryAgainLater, "hub unavailable")
 		return
@@ -121,7 +134,20 @@ func (h *Handler) readPump(ctx context.Context, conn *websocket.Conn, client *ro
 		if err != nil {
 			return err
 		}
-		if err := rm.Submit(ctx, client, env); err != nil {
+		op, err := board.DecodeOp(env.Payload)
+		if err != nil {
+			// A malformed op is the sender's problem alone: tell them and
+			// keep the connection; only a broken envelope closes it.
+			client.Deliver(proto.Encode(proto.Envelope{
+				V:          proto.Version,
+				Type:       proto.TypeReject,
+				Room:       rm.Name(),
+				ClientOpID: env.ClientOpID,
+				Payload:    rejectPayload(env.ClientOpID, err),
+			}))
+			continue
+		}
+		if err := rm.Submit(ctx, client, env, op); err != nil {
 			return err
 		}
 	}
@@ -173,6 +199,11 @@ func (h *Handler) closeConn(conn *websocket.Conn, client *room.Client, readErr e
 	default:
 		_ = conn.Close(websocket.StatusNormalClosure, "")
 	}
+}
+
+func rejectPayload(clientOpID string, err error) json.RawMessage {
+	data, _ := json.Marshal(proto.Reject{ClientOpID: clientOpID, Reason: err.Error()})
+	return data
 }
 
 func newClientID() string {
