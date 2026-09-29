@@ -436,3 +436,27 @@ func TestViewerCanWatchButNotDraw(t *testing.T) {
 		t.Fatalf("reject = %+v %+v", rej, p)
 	}
 }
+
+// A client that answers pings stays connected however long it stays
+// silent: someone watching a board sends nothing for minutes.
+func TestQuietClientStaysConnected(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ReadTimeout = 200 * time.Millisecond
+	cfg.WriteTimeout = 5 * time.Second
+	f := newFixture(t, cfg)
+	watcher := dial(t, f, "quiet")
+	read(t, watcher, proto.TypeHello)
+	drawer := dial(t, f, "quiet")
+	read(t, drawer, proto.TypeHello)
+
+	go func() {
+		time.Sleep(5 * cfg.ReadTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = drawer.Write(ctx, websocket.MessageText, []byte(`{"v":1,"type":"op","clientOpId":"x","payload":{"kind":"add","id":"q","object":{"id":"q","kind":"rect"}}}`))
+	}()
+	// The watcher sends nothing; reading keeps answering the server's pings.
+	if got := read(t, watcher, proto.TypeOp); got.Seq != 1 {
+		t.Fatalf("got %+v", got)
+	}
+}
