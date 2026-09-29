@@ -32,3 +32,22 @@ func TestDecodeRejects(t *testing.T) {
 		})
 	}
 }
+
+func TestDecodeCursor(t *testing.T) {
+	if _, err := Decode([]byte(`{"v":1,"type":"cursor","payload":{"x":1,"y":2}}`)); err != nil {
+		t.Fatalf("cursor envelope rejected: %v", err)
+	}
+	c, err := DecodeCursor([]byte(`{"x":1.5,"y":-2}`))
+	if err != nil || c.X != 1.5 || c.Y != -2 || c.Hidden {
+		t.Fatalf("DecodeCursor = %+v, %v", c, err)
+	}
+	c, err = DecodeCursor([]byte(`{"hidden":true,"x":1e99}`))
+	if err != nil || !c.Hidden || c.X != 0 {
+		t.Fatalf("hidden cursor = %+v, %v", c, err)
+	}
+	for _, raw := range []string{`{"x":1e8,"y":0}`, `{"x":0,"y":-1e8}`, `[1,2]`} {
+		if _, err := DecodeCursor([]byte(raw)); !errors.Is(err, ErrBadEnvelope) {
+			t.Fatalf("DecodeCursor(%s) err = %v, want ErrBadEnvelope", raw, err)
+		}
+	}
+}

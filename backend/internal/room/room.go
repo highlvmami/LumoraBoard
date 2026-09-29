@@ -27,10 +27,11 @@ type Room struct {
 	hub  *Hub
 	log  *slog.Logger
 
-	joinCh  chan joinReq  // only the hub sends here
-	leaveCh chan leaveReq // members leaving
-	inCh    chan inbound  // ops from members
-	closed  chan struct{} // closed when the actor exits
+	joinCh   chan joinReq   // only the hub sends here
+	leaveCh  chan leaveReq  // members leaving
+	inCh     chan inbound   // ops from members
+	cursorCh chan cursorMsg // presence from members; lossy
+	closed   chan struct{}  // closed when the actor exits
 
 	// State below is owned by the run goroutine.
 	members map[*Client]struct{}
@@ -57,6 +58,11 @@ type leaveReq struct {
 	done   chan struct{}
 }
 
+type cursorMsg struct {
+	from *Client
+	cur  proto.Cursor
+}
+
 type inbound struct {
 	from *Client
 	env  proto.Envelope
@@ -65,15 +71,16 @@ type inbound struct {
 
 func newRoom(name string, hub *Hub) *Room {
 	return &Room{
-		name:    name,
-		hub:     hub,
-		log:     hub.log.With("room", name),
-		joinCh:  make(chan joinReq, 16),
-		leaveCh: make(chan leaveReq),
-		inCh:    make(chan inbound, hub.cfg.InboundBuffer),
-		closed:  make(chan struct{}),
-		members: make(map[*Client]struct{}),
-		board:   board.NewState(),
+		name:     name,
+		hub:      hub,
+		log:      hub.log.With("room", name),
+		joinCh:   make(chan joinReq, 16),
+		leaveCh:  make(chan leaveReq),
+		inCh:     make(chan inbound, hub.cfg.InboundBuffer),
+		cursorCh: make(chan cursorMsg, hub.cfg.InboundBuffer),
+		closed:   make(chan struct{}),
+		members:  make(map[*Client]struct{}),
+		board:    board.NewState(),
 	}
 }
 
@@ -103,6 +110,17 @@ func (r *Room) Submit(ctx context.Context, from *Client, env proto.Envelope, op 
 		return ErrRoomClosed
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+// Cursor hands a presence update to the room without ever blocking. When
+// the room is busy the update is dropped and counted: a newer position is
+// never far behind, and ops must not wait behind cursor traffic.
+func (r *Room) Cursor(from *Client, cur proto.Cursor) {
+	select {
+	case r.cursorCh <- cursorMsg{from: from, cur: cur}:
+	default:
+		r.hub.cursorDrops.Add(1)
 	}
 }
 
@@ -161,6 +179,12 @@ func (r *Room) run(ctx context.Context) {
 			}
 			r.apply(in)
 
+		case cm := <-r.cursorCh:
+			if _, ok := r.members[cm.from]; !ok {
+				continue
+			}
+			r.cursor(cm)
+
 		case <-idle.C:
 			if len(r.members) == 0 {
 				retireCh = r.hub.retireCh
@@ -193,6 +217,19 @@ func (r *Room) apply(in inbound) {
 	msg := proto.Encode(in.env)
 	r.remember(seq, msg)
 	r.broadcast(msg)
+}
+
+// cursor fans a presence update out to everyone but its sender. It is
+// best effort per recipient and never drops a member.
+func (r *Room) cursor(cm cursorMsg) {
+	msg := proto.Encode(proto.Envelope{
+		V: proto.Version, Type: proto.TypeCursor, Room: r.name, From: cm.from.ID(), Payload: mustJSON(cm.cur),
+	})
+	for c := range r.members {
+		if c != cm.from && !c.trySendLossy(msg) {
+			r.hub.cursorDrops.Add(1)
+		}
+	}
 }
 
 func (r *Room) reject(c *Client, clientOpID string, err error) {
@@ -230,15 +267,15 @@ func (r *Room) canResume(since uint64) bool {
 }
 
 func (r *Room) join(c *Client, since uint64) {
-	members := make([]string, 0, len(r.members))
+	members := make([]proto.Member, 0, len(r.members))
 	for m := range r.members {
-		members = append(members, m.ID())
+		members = append(members, m.member())
 	}
 
 	// Tell the existing members first: the newcomer learns who is here
 	// from its hello and does not need to see its own arrival.
 	r.broadcast(proto.Encode(proto.Envelope{
-		V: proto.Version, Type: proto.TypeJoined, Room: r.name, From: c.ID(),
+		V: proto.Version, Type: proto.TypeJoined, Room: r.name, From: c.ID(), Payload: mustJSON(c.member()),
 	}))
 	r.members[c] = struct{}{}
 

@@ -12,7 +12,10 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 
@@ -35,6 +38,10 @@ type Config struct {
 	ReadTimeout time.Duration
 	// WriteTimeout bounds a single outbound write.
 	WriteTimeout time.Duration
+	// CursorInterval is the minimum gap between two cursor updates from
+	// one connection; faster ones are dropped. Clients throttle to about
+	// 25 Hz on their own, so this only bites on misbehaving ones.
+	CursorInterval time.Duration
 }
 
 // DefaultConfig is what the server uses unless told otherwise.
@@ -44,6 +51,7 @@ func DefaultConfig() Config {
 		MaxMessageBytes: 64 << 10,
 		ReadTimeout:     60 * time.Second,
 		WriteTimeout:    10 * time.Second,
+		CursorInterval:  25 * time.Millisecond,
 	}
 }
 
@@ -61,8 +69,11 @@ func NewHandler(hub *room.Hub, cfg Config, log *slog.Logger) *Handler {
 	return &Handler{hub: hub, cfg: cfg, log: log}
 }
 
-// ServeHTTP expects ?room=<name> and optionally &since=<seq> (the last seq
-// a reconnecting client saw), and serves the connection until either side
+// maxNameRunes caps the display name a client may pick.
+const maxNameRunes = 32
+
+// ServeHTTP expects ?room=<name>, optionally &since=<seq> (the last seq a
+// reconnecting client saw) and &name=<display name>, and serves the connection until either side
 // closes it.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("room")
@@ -90,7 +101,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	client := room.NewClient(newClientID(), h.cfg.SendBuffer)
+	client := room.NewClient(newClientID(), h.cfg.SendBuffer).WithName(cleanName(r.URL.Query().Get("name")))
 	rm, err := h.hub.Join(ctx, name, client, since)
 	if err != nil {
 		_ = conn.Close(websocket.StatusTryAgainLater, "hub unavailable")
@@ -122,6 +133,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // readPump decodes client frames and hands them to the room. It returns
 // when the connection fails, the client misbehaves, or ctx is cancelled.
 func (h *Handler) readPump(ctx context.Context, conn *websocket.Conn, client *room.Client, rm *room.Room) error {
+	var lastCursor time.Time
 	for {
 		readCtx, cancel := context.WithTimeout(ctx, h.cfg.ReadTimeout)
 		_, data, err := conn.Read(readCtx)
@@ -133,6 +145,19 @@ func (h *Handler) readPump(ctx context.Context, conn *websocket.Conn, client *ro
 		env, err := proto.Decode(data)
 		if err != nil {
 			return err
+		}
+		if env.Type == proto.TypeCursor {
+			cur, err := proto.DecodeCursor(env.Payload)
+			if err != nil {
+				return err
+			}
+			// Hidden always goes through so a cursor never lingers on
+			// other screens after its owner moved away.
+			if now := time.Now(); cur.Hidden || now.Sub(lastCursor) >= h.cfg.CursorInterval {
+				lastCursor = now
+				rm.Cursor(client, cur)
+			}
+			continue
 		}
 		op, err := board.DecodeOp(env.Payload)
 		if err != nil {
@@ -204,6 +229,24 @@ func (h *Handler) closeConn(conn *websocket.Conn, client *room.Client, readErr e
 func rejectPayload(clientOpID string, err error) json.RawMessage {
 	data, _ := json.Marshal(proto.Reject{ClientOpID: clientOpID, Reason: err.Error()})
 	return data
+}
+
+// cleanName trims a display name, strips control characters and caps its
+// length. Names are cosmetic; the client id is what identifies a member.
+func cleanName(raw string) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range strings.TrimSpace(raw) {
+		if n == maxNameRunes {
+			break
+		}
+		if unicode.IsControl(r) || r == utf8.RuneError {
+			continue
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func newClientID() string {

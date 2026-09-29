@@ -19,6 +19,9 @@ const (
 	// TypeOp is any board operation. In Faz 1 the payload is opaque and is
 	// broadcast to the room unchanged, stamped with a sequence number.
 	TypeOp = "op"
+	// TypeCursor is a presence update: where a member's pointer is. It is
+	// ephemeral, carries no seq, is never logged and may be dropped.
+	TypeCursor = "cursor"
 
 	// TypeHello is sent to a client right after it joins a room.
 	TypeHello = "hello"
@@ -50,9 +53,42 @@ type Envelope struct {
 type Hello struct {
 	ClientID string          `json:"clientId"`
 	Seq      uint64          `json:"seq"`
-	Members  []string        `json:"members"`
+	Members  []Member        `json:"members"`
 	Resume   bool            `json:"resume,omitempty"`
 	Objects  json.RawMessage `json:"objects,omitempty"`
+}
+
+// Member identifies someone in a room. It is the payload of TypeJoined
+// and an element of Hello.Members.
+type Member struct {
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
+}
+
+// Cursor is the payload of a TypeCursor message, in board coordinates.
+// Hidden means the pointer left the board; X and Y are then ignored.
+type Cursor struct {
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Hidden bool    `json:"hidden,omitempty"`
+}
+
+// maxCursorCoordinate matches the board's coordinate bound.
+const maxCursorCoordinate = 1e7
+
+// DecodeCursor parses and bounds-checks a cursor payload.
+func DecodeCursor(payload json.RawMessage) (Cursor, error) {
+	var c Cursor
+	if err := json.Unmarshal(payload, &c); err != nil {
+		return Cursor{}, fmt.Errorf("%w: cursor: %w", ErrBadEnvelope, err)
+	}
+	if c.Hidden {
+		return Cursor{Hidden: true}, nil
+	}
+	if !(c.X >= -maxCursorCoordinate && c.X <= maxCursorCoordinate && c.Y >= -maxCursorCoordinate && c.Y <= maxCursorCoordinate) {
+		return Cursor{}, fmt.Errorf("%w: cursor out of range", ErrBadEnvelope)
+	}
+	return c, nil
 }
 
 // Reject is the payload of a TypeReject message.
@@ -86,7 +122,7 @@ func (e Envelope) Validate() error {
 	if e.V != Version {
 		return fmt.Errorf("%w: version %d, want %d", ErrBadEnvelope, e.V, Version)
 	}
-	if e.Type != TypeOp {
+	if e.Type != TypeOp && e.Type != TypeCursor {
 		return fmt.Errorf("%w: client may not send type %q", ErrBadEnvelope, e.Type)
 	}
 	if e.Seq != 0 || e.From != "" {

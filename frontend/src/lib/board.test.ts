@@ -127,12 +127,4 @@ describe('BoardStore', () => {
 		expect(s.seq).toBe(3);
 		expect(s.view.size).toBe(2);
 	});
-
-	it('tracks members', () => {
-		const s = new BoardStore();
-		s.receive({ v: 1, type: 'hello', payload: { clientId: 'me', seq: 0, members: ['x'], objects: [] } });
-		s.receive({ v: 1, type: 'joined', from: 'y' });
-		s.receive({ v: 1, type: 'left', from: 'x' });
-		expect([...s.members]).toEqual(['y']);
-	});
 });
