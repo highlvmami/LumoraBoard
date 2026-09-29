@@ -35,7 +35,9 @@ type Room struct {
 	leaveCh  chan leaveReq  // members leaving
 	inCh     chan inbound   // ops and chat messages from members
 	cursorCh chan cursorMsg // presence (cursors, typing) from members; lossy
-	closed   chan struct{}  // closed when the actor exits
+	directCh chan directMsg // server notices for one member; lossy
+	snapCh   chan chan []board.Object
+	closed   chan struct{} // closed when the actor exits
 
 	// State below is owned by the run goroutine.
 	members map[*Client]struct{}
@@ -79,6 +81,14 @@ type leaveReq struct {
 	done   chan struct{}
 }
 
+// directMsg is a message for one member, such as export progress. It is
+// delivered only if that member still belongs to user.
+type directMsg struct {
+	client string
+	user   string
+	msg    []byte
+}
+
 type cursorMsg struct {
 	from   *Client
 	cur    proto.Cursor
@@ -102,6 +112,8 @@ func newRoom(name string, hub *Hub) *Room {
 		leaveCh:  make(chan leaveReq),
 		inCh:     make(chan inbound, hub.cfg.InboundBuffer),
 		cursorCh: make(chan cursorMsg, hub.cfg.InboundBuffer),
+		directCh: make(chan directMsg, 64),
+		snapCh:   make(chan chan []board.Object),
 		closed:   make(chan struct{}),
 		members:  make(map[*Client]struct{}),
 		board:    board.NewState(),
@@ -214,6 +226,10 @@ func (r *Room) run(ctx context.Context) {
 		// persister has room for them; otherwise they wait in inCh and
 		// Submit blocks, which slows the senders down.
 		ops := r.inCh
+		var snaps chan chan []board.Object
+		if r.loaded {
+			snaps = r.snapCh
+		}
 		var wake <-chan struct{}
 		if r.loaded && r.updateStall() {
 			ops = nil
@@ -285,6 +301,17 @@ func (r *Room) run(ctx context.Context) {
 
 		case <-wake:
 			// The persister wrote something; the loop re-checks the queue.
+
+		case reply := <-snaps:
+			reply <- r.board.Snapshot()
+
+		case d := <-r.directCh:
+			for c := range r.members {
+				if c.id == d.client && c.user == d.user {
+					c.trySendLossy(d.msg)
+					break
+				}
+			}
 
 		case cm := <-r.cursorCh:
 			if _, ok := r.members[cm.from]; !ok {
@@ -385,19 +412,26 @@ func (r *Room) startLoad(ctx context.Context, wg *sync.WaitGroup) {
 	}()
 }
 
-// restore rebuilds the board, seq and op log from what the store had.
-func (r *Room) restore(data store.Loaded) {
-	r.board.Restore(data.Snapshot.Objects)
-	r.seq = data.Snapshot.Seq
+// replay applies stored ops on top of the stored snapshot. bad is called
+// for ops that do not apply: the room only ever stored ops it had applied,
+// so that means the data was edited by hand, and skipping the op beats
+// refusing to open the board.
+func replay(st *board.State, data store.Loaded, each func(rec store.Record, err error)) {
+	st.Restore(data.Snapshot.Objects)
 	for _, rec := range data.Ops {
 		op, err := board.DecodeOp(rec.Op)
 		if err == nil {
-			err = r.board.Apply(op, rec.Seq, rec.From)
+			err = st.Apply(op, rec.Seq, rec.From)
 		}
+		each(rec, err)
+	}
+}
+
+// restore rebuilds the board, seq and op log from what the store had.
+func (r *Room) restore(data store.Loaded) {
+	r.seq = data.Snapshot.Seq
+	replay(r.board, data, func(rec store.Record, err error) {
 		if err != nil {
-			// The room only ever stored ops it had applied, so this means
-			// the data was edited by hand. Skip it rather than refuse to
-			// open the board.
 			r.log.Error("skipping stored op", "seq", rec.Seq, "err", err)
 		}
 		r.seq = rec.Seq
@@ -405,7 +439,7 @@ func (r *Room) restore(data store.Loaded) {
 			V: proto.Version, Type: proto.TypeOp, Room: r.name, Seq: rec.Seq,
 			From: rec.From, ClientOpID: rec.ClientOpID, Payload: rec.Op,
 		}))
-	}
+	})
 	r.sinceSnap = len(data.Ops)
 	r.chat, r.chatMore = data.Chat, data.MoreChat
 	if n := len(data.Chat); n > 0 {

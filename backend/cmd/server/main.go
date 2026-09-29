@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/highlvmami/lumoraboard/backend/internal/auth"
+	"github.com/highlvmami/lumoraboard/backend/internal/export"
 	"github.com/highlvmami/lumoraboard/backend/internal/room"
 	"github.com/highlvmami/lumoraboard/backend/internal/server"
 	"github.com/highlvmami/lumoraboard/backend/internal/store"
@@ -62,10 +63,13 @@ func run() error {
 		roomCfg.Store, authStore = boards, accounts
 		log.Info("persistence enabled", "store", "postgres")
 	} else {
+		// Kept in process memory so idle boards survive until restart.
+		roomCfg.Store = store.NewMemory()
 		log.Warn("LUMORA_DATABASE_URL not set; boards and accounts live in memory only")
 	}
 
-	authSvc := auth.New(authConfig(), authStore, log)
+	authCfg := authConfig()
+	authSvc := auth.New(authCfg, authStore, log)
 	if authSvc.Enabled() {
 		log.Info("sign-in enabled")
 	} else {
@@ -79,17 +83,16 @@ func run() error {
 		boardAuth = authSvc
 		wsHandler.WithAuth(boardAuth)
 	}
-	var boards store.Store = store.Nop{}
-	if roomCfg.Store != nil {
-		boards = roomCfg.Store
-	}
-	chat := ws.NewChatHistory(boards, boardAuth, log)
-	srv := server.New(server.Config{Addr: addr, ShutdownTimeout: 10 * time.Second}, log, wsHandler, authSvc, chat)
+	chat := ws.NewChatHistory(roomCfg.Store, boardAuth, log)
+	exports := export.New(export.Config{}, hub, hub, log)
+	exportHandler := export.NewHandler(exports, roomCfg.Store, boardAuth, authCfg.PublicURL, log)
+	srv := server.New(server.Config{Addr: addr, ShutdownTimeout: 10 * time.Second}, log, wsHandler, authSvc, chat, exportHandler)
 
 	// The hub and the listener stop together: the first error, or the
 	// signal, cancels the group context and the other winds down cleanly.
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return hub.Run(gctx) })
+	g.Go(func() error { return exports.Run(gctx) })
 	g.Go(func() error { return srv.Run(gctx) })
 	return g.Wait()
 }

@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/highlvmami/lumoraboard/backend/internal/board"
 	"github.com/highlvmami/lumoraboard/backend/internal/store"
 )
 
@@ -92,6 +93,7 @@ type Hub struct {
 	joinCh   chan hubJoin
 	retireCh chan retireReq
 	countCh  chan chan int
+	findCh   chan findReq
 	closed   chan struct{}
 	wg       sync.WaitGroup
 
@@ -114,6 +116,12 @@ type hubJoinResult struct {
 	err  error
 }
 
+// findReq looks a live room up without creating one.
+type findReq struct {
+	room  string
+	reply chan *Room
+}
+
 type retireReq struct {
 	room  *Room
 	reply chan bool
@@ -127,6 +135,7 @@ func NewHub(cfg Config, log *slog.Logger) *Hub {
 		joinCh:   make(chan hubJoin),
 		retireCh: make(chan retireReq),
 		countCh:  make(chan chan int),
+		findCh:   make(chan findReq),
 		closed:   make(chan struct{}),
 		rooms:    make(map[string]*Room),
 	}
@@ -170,6 +179,9 @@ func (h *Hub) Run(ctx context.Context) error {
 
 		case reply := <-h.countCh:
 			reply <- len(h.rooms)
+
+		case req := <-h.findCh:
+			req.reply <- h.rooms[req.room]
 		}
 	}
 }
@@ -224,4 +236,60 @@ func mustJSON(v any) json.RawMessage {
 		panic("room: marshal payload: " + err.Error())
 	}
 	return data
+}
+
+// find returns the live room with that name, or nil.
+func (h *Hub) find(ctx context.Context, name string) (*Room, error) {
+	req := findReq{room: name, reply: make(chan *Room, 1)}
+	select {
+	case h.findCh <- req:
+	case <-h.closed:
+		return nil, ErrHubClosed
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return <-req.reply, nil
+}
+
+// Snapshot returns the board's current objects. A live room answers from
+// memory, so ops still on their way to the store are included; otherwise
+// the board is read from the store. It never creates a room.
+func (h *Hub) Snapshot(ctx context.Context, name string) ([]board.Object, error) {
+	rm, err := h.find(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if rm != nil {
+		reply := make(chan []board.Object, 1)
+		select {
+		case rm.snapCh <- reply:
+			return <-reply, nil
+		case <-rm.closed:
+			// Retired in the meantime; everything it had is in the store.
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	data, err := h.cfg.Store.Load(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	st := board.NewState()
+	replay(st, data, func(store.Record, error) {})
+	return st.Snapshot(), nil
+}
+
+// Notify sends msg to one connection in a room, if the room is live and
+// the connection belongs to user (empty in open mode). It never blocks and
+// may drop the message; callers must not rely on it for anything a client
+// cannot fetch again.
+func (h *Hub) Notify(ctx context.Context, room, client, user string, msg []byte) {
+	rm, err := h.find(ctx, room)
+	if err != nil || rm == nil {
+		return
+	}
+	select {
+	case rm.directCh <- directMsg{client: client, user: user, msg: msg}:
+	default:
+	}
 }
