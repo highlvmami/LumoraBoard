@@ -440,55 +440,58 @@
 			{/if}
 			<button type="submit">Join</button>
 		</form>
-		<div class="people" aria-label="People in this room">
-			<span class="avatar me" style:--c={colorFor(clientId || 'me')} title="{me} (you)">
-				{#if auth?.user?.avatar}<img src={auth.user.avatar} alt="" />{:else}{me.slice(0, 1).toUpperCase()}{/if}
-			</span>
-			{#each members as m (m.id)}
-				{@const label = displayName(m, m.id)}
-				<span class="avatar" style:--c={colorFor(m.id)} title="{label}{m.role ? ` (${m.role})` : ''}" data-member={m.id}>
-					{#if m.avatar}<img src={m.avatar} alt="" />{:else}{label.replace('Guest ', '').slice(0, 1).toUpperCase()}{/if}
+		<!-- Room controls only for people who can open this board. -->
+		{#if !gate}
+			<div class="people" aria-label="People in this room">
+				<span class="avatar me" style:--c={colorFor(clientId || 'me')} title="{me} (you)">
+					{#if auth?.user?.avatar}<img src={auth.user.avatar} alt="" />{:else}{me.slice(0, 1).toUpperCase()}{/if}
 				</span>
-			{/each}
-		</div>
-		<button type="button" class="chat-toggle" aria-pressed={chatOpen} onclick={toggleChat}>
-			Chat{#if unread > 0}<span class="badge" aria-label="{unread} unread">{unread > 99 ? '99+' : unread}</span>{/if}
-		</button>
-		<div class="share-wrap">
-			<button type="button" aria-expanded={exportOpen} onclick={() => (exportOpen = !exportOpen)} disabled={!!gate}>Export</button>
-			{#if exportOpen}
-				<div class="menu start" role="menu">
-					<button type="button" role="menuitem" onclick={() => exportLocal('png')}>PNG image</button>
-					<button type="button" role="menuitem" onclick={() => exportLocal('svg')}>SVG vector</button>
-					<hr />
-					<button type="button" role="menuitem" onclick={() => exportServer('png')} disabled={!!job && !jobFinished(job)}
-						>High-res PNG (4×)</button
-					>
-					<button type="button" role="menuitem" onclick={() => exportServer('pdf')} disabled={!!job && !jobFinished(job)}>PDF</button>
-					<button type="button" role="menuitem" onclick={() => exportServer('json')} disabled={!!job && !jobFinished(job)}
-						>JSON backup</button
-					>
-					{#if !auth?.enabled || auth.user}
+				{#each members as m (m.id)}
+					{@const label = displayName(m, m.id)}
+					<span class="avatar" style:--c={colorFor(m.id)} title="{label}{m.role ? ` (${m.role})` : ''}" data-member={m.id}>
+						{#if m.avatar}<img src={m.avatar} alt="" />{:else}{label.replace('Guest ', '').slice(0, 1).toUpperCase()}{/if}
+					</span>
+				{/each}
+			</div>
+			<button type="button" class="chat-toggle" aria-pressed={chatOpen} onclick={toggleChat}>
+				Chat{#if unread > 0}<span class="badge" aria-label="{unread} unread">{unread > 99 ? '99+' : unread}</span>{/if}
+			</button>
+			<div class="share-wrap">
+				<button type="button" aria-expanded={exportOpen} onclick={() => (exportOpen = !exportOpen)} disabled={!!gate}>Export</button>
+				{#if exportOpen}
+					<div class="menu start" role="menu">
+						<button type="button" role="menuitem" onclick={() => exportLocal('png')}>PNG image</button>
+						<button type="button" role="menuitem" onclick={() => exportLocal('svg')}>SVG vector</button>
 						<hr />
-						<button type="button" role="menuitem" onclick={() => importInput?.click()}>Import backup…</button>
-					{/if}
-				</div>
-			{/if}
-			<input bind:this={importInput} type="file" accept="application/json,.json" hidden onchange={onImport} />
-		</div>
-		<div class="share-wrap">
-			{#if auth?.enabled && role === 'owner'}
-				<button type="button" aria-expanded={shareOpen} onclick={() => (shareOpen = !shareOpen)}>Share</button>
-				{#if shareOpen}
-					<div class="menu" role="menu">
-						<button type="button" role="menuitem" onclick={() => invite('editor')}>Copy edit link</button>
-						<button type="button" role="menuitem" onclick={() => invite('viewer')}>Copy view-only link</button>
+						<button type="button" role="menuitem" onclick={() => exportServer('png')} disabled={!!job && !jobFinished(job)}
+							>High-res PNG (4×)</button
+						>
+						<button type="button" role="menuitem" onclick={() => exportServer('pdf')} disabled={!!job && !jobFinished(job)}>PDF</button>
+						<button type="button" role="menuitem" onclick={() => exportServer('json')} disabled={!!job && !jobFinished(job)}
+							>JSON backup</button
+						>
+						{#if !auth?.enabled || auth.user}
+							<hr />
+							<button type="button" role="menuitem" onclick={() => importInput?.click()}>Import backup…</button>
+						{/if}
 					</div>
 				{/if}
-			{:else}
-				<button type="button" onclick={() => copy(page.url.href, 'Link')}>Share</button>
-			{/if}
-		</div>
+				<input bind:this={importInput} type="file" accept="application/json,.json" hidden onchange={onImport} />
+			</div>
+			<div class="share-wrap">
+				{#if auth?.enabled && role === 'owner'}
+					<button type="button" aria-expanded={shareOpen} onclick={() => (shareOpen = !shareOpen)}>Share</button>
+					{#if shareOpen}
+						<div class="menu" role="menu">
+							<button type="button" role="menuitem" onclick={() => invite('editor')}>Copy edit link</button>
+							<button type="button" role="menuitem" onclick={() => invite('viewer')}>Copy view-only link</button>
+						</div>
+					{/if}
+				{:else}
+					<button type="button" onclick={() => copy(page.url.href, 'Link')}>Share</button>
+				{/if}
+			</div>
+		{/if}
 		{#if auth?.user}
 			<button type="button" class="quiet" onclick={signOut} title="Signed in as {auth.user.name}">Sign out</button>
 		{:else if auth?.enabled && auth.guests}
@@ -548,7 +551,7 @@
 					{/if}
 				</div>
 			{/if}
-			{#if socket === 'reconnecting'}<p class="banner">Connection lost, reconnecting…</p>{/if}
+			{#if socket === 'reconnecting'}<p class="banner">Connection lost, reconnecting…{#if detail}<span class="muted"> ({detail})</span>{/if}</p>{/if}
 		</div>
 		{#if chatOpen && !gate}
 			<div class="chat-pane">
