@@ -11,11 +11,13 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/highlvmami/lumoraboard/backend/internal/board"
 	"github.com/highlvmami/lumoraboard/backend/internal/proto"
+	"github.com/highlvmami/lumoraboard/backend/internal/ratelimit"
 	"github.com/highlvmami/lumoraboard/backend/internal/store"
 )
 
@@ -31,8 +33,8 @@ type Room struct {
 
 	joinCh   chan joinReq   // only the hub sends here
 	leaveCh  chan leaveReq  // members leaving
-	inCh     chan inbound   // ops from members
-	cursorCh chan cursorMsg // presence from members; lossy
+	inCh     chan inbound   // ops and chat messages from members
+	cursorCh chan cursorMsg // presence (cursors, typing) from members; lossy
 	closed   chan struct{}  // closed when the actor exits
 
 	// State below is owned by the run goroutine.
@@ -49,6 +51,11 @@ type Room struct {
 	waiting   []joinReq       // joins that arrived before the board loaded
 	sinceSnap int             // ops accepted since the last snapshot was queued
 	stalled   bool            // not taking ops: the persist queue is full
+
+	chatSeq  uint64              // id of the last chat message
+	chat     []proto.ChatMessage // the newest messages, at most store.ChatTail
+	chatMore bool                // older messages exist than those in chat
+	chatRate map[string]*ratelimit.Bucket
 }
 
 type loadResult struct {
@@ -73,14 +80,17 @@ type leaveReq struct {
 }
 
 type cursorMsg struct {
-	from *Client
-	cur  proto.Cursor
+	from   *Client
+	cur    proto.Cursor
+	typing bool // a chat.typing notice instead of a cursor
 }
 
+// inbound is an op or, when chat is set, a chat message.
 type inbound struct {
 	from *Client
 	env  proto.Envelope
 	op   board.Op
+	chat *proto.ChatSend
 }
 
 func newRoom(name string, hub *Hub) *Room {
@@ -96,6 +106,7 @@ func newRoom(name string, hub *Hub) *Room {
 		members:  make(map[*Client]struct{}),
 		board:    board.NewState(),
 		persist:  newPersister(name, hub),
+		chatRate: make(map[string]*ratelimit.Bucket),
 	}
 }
 
@@ -109,6 +120,18 @@ func (r *Room) Name() string { return r.name }
 // Decoding happens on the caller's goroutine so that the parse cost is
 // spread across connections rather than serialized in the room.
 func (r *Room) Submit(ctx context.Context, from *Client, env proto.Envelope, op board.Op) error {
+	return r.submit(ctx, inbound{from: from, env: env, op: op})
+}
+
+// SubmitChat hands a decoded chat message to the room. Chat goes through
+// the same queue as ops, so it is ordered with them and back-pressured the
+// same way.
+func (r *Room) SubmitChat(ctx context.Context, from *Client, env proto.Envelope, msg proto.ChatSend) error {
+	return r.submit(ctx, inbound{from: from, env: env, chat: &msg})
+}
+
+func (r *Room) submit(ctx context.Context, in inbound) error {
+	from := in.from
 	// Checked first so a dropped client gets a deterministic error even
 	// while the inbound queue has room.
 	select {
@@ -117,7 +140,7 @@ func (r *Room) Submit(ctx context.Context, from *Client, env proto.Envelope, op 
 	default:
 	}
 	select {
-	case r.inCh <- inbound{from: from, env: env, op: op}:
+	case r.inCh <- in:
 		return nil
 	case <-from.Done():
 		return ErrRoomClosed
@@ -134,6 +157,16 @@ func (r *Room) Submit(ctx context.Context, from *Client, env proto.Envelope, op 
 func (r *Room) Cursor(from *Client, cur proto.Cursor) {
 	select {
 	case r.cursorCh <- cursorMsg{from: from, cur: cur}:
+	default:
+		r.hub.cursorDrops.Add(1)
+	}
+}
+
+// Typing tells the others that from is writing a chat message. Like
+// Cursor it never blocks and may be dropped.
+func (r *Room) Typing(from *Client) {
+	select {
+	case r.cursorCh <- cursorMsg{from: from, typing: true}:
 	default:
 		r.hub.cursorDrops.Add(1)
 	}
@@ -236,6 +269,7 @@ func (r *Room) run(ctx context.Context) {
 			r.remove(req.client, ReasonLeft)
 			close(req.done)
 			if len(r.members) == 0 {
+				clear(r.chatRate)
 				idle.Reset(r.hub.cfg.IdleTimeout)
 			}
 
@@ -243,7 +277,11 @@ func (r *Room) run(ctx context.Context) {
 			if _, ok := r.members[in.from]; !ok {
 				continue // dropped between Submit and here
 			}
-			r.apply(in)
+			if in.chat != nil {
+				r.applyChat(in)
+			} else {
+				r.apply(in)
+			}
 
 		case <-wake:
 			// The persister wrote something; the loop re-checks the queue.
@@ -369,6 +407,10 @@ func (r *Room) restore(data store.Loaded) {
 		}))
 	}
 	r.sinceSnap = len(data.Ops)
+	r.chat, r.chatMore = data.Chat, data.MoreChat
+	if n := len(data.Chat); n > 0 {
+		r.chatSeq = data.Chat[n-1].ID
+	}
 	r.loaded = true
 	if r.seq > 0 {
 		r.log.Info("board loaded", "seq", r.seq, "objects", r.board.Len(), "replayed", len(data.Ops))
@@ -427,12 +469,71 @@ func (r *Room) apply(in inbound) {
 	}
 }
 
+// Chat rejections.
+var (
+	ErrChatGuest = errors.New("sign in to chat")
+	ErrChatRate  = errors.New("slow down: too many chat messages")
+)
+
+// chatKey is what the chat rate limit counts against: the account when
+// there is one, so opening more tabs does not buy more messages.
+func chatKey(c *Client) string {
+	if c.user != "" {
+		return "u:" + c.user
+	}
+	return "c:" + c.id
+}
+
+// isGuest reports whether c is an anonymous read-only visitor. In open
+// mode nobody has an account but everyone edits, and may chat.
+func isGuest(c *Client) bool { return c.user == "" && !c.Role().CanEdit() }
+
+// applyChat sequences a chat message, fans it out and queues it for the
+// store. Viewers with an account may chat; anonymous guests may not.
+func (r *Room) applyChat(in inbound) {
+	c := in.from
+	if isGuest(c) {
+		r.reject(c, in.env.ClientOpID, ErrChatGuest)
+		return
+	}
+	key := chatKey(c)
+	b, ok := r.chatRate[key]
+	if !ok {
+		b = ratelimit.New(r.hub.cfg.ChatBurst, r.hub.cfg.ChatRate)
+		r.chatRate[key] = b
+	}
+	if !b.Allow(time.Now()) {
+		r.reject(c, in.env.ClientOpID, ErrChatRate)
+		return
+	}
+	r.chatSeq++
+	m := proto.ChatMessage{
+		ID: r.chatSeq, From: c.id, User: c.user, Name: c.name, Avatar: c.avatar,
+		Text: in.chat.Text, Ref: in.chat.Ref, At: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	if len(r.chat) == store.ChatTail {
+		r.chat = slices.Delete(r.chat, 0, 1)
+		r.chatMore = true
+	}
+	r.chat = append(r.chat, m)
+	r.broadcast(proto.Encode(proto.Envelope{
+		V: proto.Version, Type: proto.TypeChatMessage, Room: r.name, From: c.id,
+		ClientOpID: in.env.ClientOpID, Payload: mustJSON(m),
+	}))
+	r.persistSend(persistItem{chat: &m})
+}
+
 // cursor fans a presence update out to everyone but its sender. It is
 // best effort per recipient and never drops a member.
 func (r *Room) cursor(cm cursorMsg) {
-	msg := proto.Encode(proto.Envelope{
-		V: proto.Version, Type: proto.TypeCursor, Room: r.name, From: cm.from.ID(), Payload: mustJSON(cm.cur),
-	})
+	env := proto.Envelope{V: proto.Version, Type: proto.TypeCursor, Room: r.name, From: cm.from.ID(), Payload: mustJSON(cm.cur)}
+	if cm.typing {
+		if isGuest(cm.from) {
+			return
+		}
+		env = proto.Envelope{V: proto.Version, Type: proto.TypeChatTyping, Room: r.name, From: cm.from.ID()}
+	}
+	msg := proto.Encode(env)
 	for c := range r.members {
 		if c != cm.from && !c.trySendLossy(msg) {
 			r.hub.cursorDrops.Add(1)
@@ -487,7 +588,10 @@ func (r *Room) join(c *Client, since uint64) {
 	}))
 	r.members[c] = struct{}{}
 
-	hello := proto.Hello{ClientID: c.ID(), Seq: r.seq, Members: members, Role: c.Role()}
+	hello := proto.Hello{
+		ClientID: c.ID(), Seq: r.seq, Members: members, Role: c.Role(),
+		Chat: proto.ChatHistory{Messages: nonNil(r.chat), More: r.chatMore},
+	}
 	resume := r.canResume(since)
 	if resume {
 		hello.Resume = true
@@ -520,6 +624,7 @@ func (r *Room) remove(c *Client, reason CloseReason) {
 		return
 	}
 	delete(r.members, c)
+	delete(r.chatRate, "c:"+c.id)
 	c.close(reason)
 	if reason == ReasonSlowConsumer {
 		r.hub.slowDrops.Add(1)
@@ -549,4 +654,11 @@ func (r *Room) closeAll(reason CloseReason) {
 		delete(r.members, c)
 		c.close(reason)
 	}
+}
+
+func nonNil[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
 }

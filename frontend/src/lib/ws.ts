@@ -86,6 +86,10 @@ export type RoomConnection = {
 	send: (payload: unknown) => Envelope;
 	/** Sends a presence update. Best effort: dropped silently while not open. */
 	sendCursor: (payload: { x: number; y: number } | { hidden: true }) => void;
+	/** Sends a chat message; returns the envelope for its clientOpId. Throws if not open. */
+	sendChat: (text: string, ref?: string) => Envelope;
+	/** Tells the room this client is typing. Best effort. */
+	sendTyping: () => void;
 	close: () => void;
 };
 
@@ -147,6 +151,24 @@ export function connectRoom(room: string, events: RoomEvents, opts: ConnectOptio
 		sendCursor(payload) {
 			if (!socket || socket.readyState !== WebSocket.OPEN) return;
 			socket.send(JSON.stringify({ v: PROTOCOL_VERSION, type: 'cursor', payload }));
+		},
+		sendChat(text, ref) {
+			if (!socket || socket.readyState !== WebSocket.OPEN) {
+				throw new Error('socket is not open');
+			}
+			opCounter += 1;
+			const env: Envelope = {
+				v: PROTOCOL_VERSION,
+				type: 'chat.send',
+				clientOpId: `m${Date.now()}-${opCounter}`,
+				payload: ref ? { text, ref } : { text }
+			};
+			socket.send(JSON.stringify(env));
+			return env;
+		},
+		sendTyping() {
+			if (!socket || socket.readyState !== WebSocket.OPEN) return;
+			socket.send(JSON.stringify({ v: PROTOCOL_VERSION, type: 'chat.typing' }));
 		},
 		close() {
 			closed = true;

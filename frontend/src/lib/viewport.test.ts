@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { identity, MAX_SCALE, MIN_SCALE, panBy, toScreen, toWorld, zoomAt } from './viewport';
+import { centerOn, identity, MAX_SCALE, MIN_SCALE, panBy, toScreen, toWorld, zoomAt } from './viewport';
 
 describe('viewport', () => {
 	it('round-trips between screen and world', () => {
@@ -27,5 +27,13 @@ describe('viewport', () => {
 	it('clamps the scale', () => {
 		expect(zoomAt(identity(), { x: 0, y: 0 }, 1000).scale).toBe(MAX_SCALE);
 		expect(zoomAt(identity(), { x: 0, y: 0 }, 0.0001).scale).toBe(MIN_SCALE);
+	});
+});
+
+describe('centerOn', () => {
+	it('puts the point in the middle of the screen at the current zoom', () => {
+		const v = centerOn({ x: 0, y: 0, scale: 2 }, { x: 100, y: 50 }, { width: 800, height: 600 });
+		expect(toScreen(v, { x: 100, y: 50 })).toEqual({ x: 400, y: 300 });
+		expect(v.scale).toBe(2);
 	});
 });

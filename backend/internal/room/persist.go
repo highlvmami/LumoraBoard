@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/highlvmami/lumoraboard/backend/internal/proto"
 	"github.com/highlvmami/lumoraboard/backend/internal/store"
 )
 
@@ -33,9 +34,11 @@ type persister struct {
 	giveUpAt time.Time // set once shutdown is noticed
 }
 
-// persistItem is exactly one of: a record, a snapshot, or a flush request.
+// persistItem is exactly one of: a record, a chat message, a snapshot, or
+// a flush request.
 type persistItem struct {
 	rec   *store.Record
+	chat  *proto.ChatMessage
 	snap  *store.Snapshot
 	flush chan struct{} // closed once everything queued before it is written
 }
@@ -63,17 +66,24 @@ func (p *persister) full() bool { return len(p.in) >= cap(p.in)-1 }
 func (p *persister) run() {
 	defer close(p.done)
 
-	var batch []store.Record
+	var (
+		batch []store.Record
+		chat  []proto.ChatMessage
+	)
 	ticker := time.NewTicker(p.cfg.FlushInterval)
 	defer ticker.Stop()
 
 	flush := func() {
-		if len(batch) == 0 {
+		if len(batch) == 0 && len(chat) == 0 {
 			return
 		}
-		recs := batch
-		p.retry("append", func(ctx context.Context) error { return p.store.Append(ctx, p.room, recs) })
-		batch = nil
+		if recs := batch; len(recs) > 0 {
+			p.retry("append", func(ctx context.Context) error { return p.store.Append(ctx, p.room, recs) })
+		}
+		if msgs := chat; len(msgs) > 0 {
+			p.retry("chat", func(ctx context.Context) error { return p.store.AppendChat(ctx, p.room, msgs) })
+		}
+		batch, chat = nil, nil
 		p.signal()
 	}
 
@@ -88,6 +98,11 @@ func (p *persister) run() {
 			case it.rec != nil:
 				batch = append(batch, *it.rec)
 				if len(batch) >= p.cfg.BatchSize {
+					flush()
+				}
+			case it.chat != nil:
+				chat = append(chat, *it.chat)
+				if len(chat) >= p.cfg.BatchSize {
 					flush()
 				}
 			case it.snap != nil:
