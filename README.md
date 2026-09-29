@@ -2,6 +2,8 @@
 
 Real-time collaborative whiteboard. Go + WebSocket backend built on a room-per-goroutine actor model, Svelte frontend.
 
+**Live demo:** https://lumoraboard-demo.onrender.com (sign in with any name). It runs on Render's free plan, so after about 15 minutes without visitors it sleeps and the first visit takes up to a minute to wake it.
+
 ## Layout
 
 | Path | What |
