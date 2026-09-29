@@ -104,7 +104,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	client := room.NewClient(newClientID(), h.cfg.SendBuffer).WithName(cleanName(r.URL.Query().Get("name")))
 	rm, err := h.hub.Join(ctx, name, client, since)
 	if err != nil {
-		_ = conn.Close(websocket.StatusTryAgainLater, "hub unavailable")
+		// 1013: the client's backoff retries, which is right for both a
+		// stopping hub and a board the store could not load yet.
+		_ = conn.Close(websocket.StatusTryAgainLater, "room unavailable")
 		return
 	}
 	log := h.log.With("room", name, "client", client.ID())
