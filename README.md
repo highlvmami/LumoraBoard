@@ -1,12 +1,28 @@
+<div align="center">
+
 # LumoraBoard
 
-**English** · [Türkçe](README.tr.md)
+**Real-time collaborative whiteboard with live cursors, private rooms and invite links.**
+
+**[Live demo →](https://lumoraboard-demo.onrender.com)**
+
+English · [Türkçe](README.tr.md)
+
+<p>
+  <img src="https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white" alt="Go 1.25">
+  <img src="https://img.shields.io/badge/WebSocket-coder%2Fwebsocket-010101?logo=socketdotio&logoColor=white" alt="WebSocket">
+  <img src="https://img.shields.io/badge/SvelteKit-Svelte%205-FF3E00?logo=svelte&logoColor=white" alt="SvelteKit">
+  <img src="https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white" alt="TypeScript">
+  <img src="https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL">
+  <img src="https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white" alt="Docker">
+  <img src="https://img.shields.io/badge/Render-46E3B7?logo=render&logoColor=black" alt="Render">
+</p>
+
+</div>
 
 A real-time collaborative whiteboard. Several people draw on the same board at once and see each other's strokes and cursors as they happen. The backend is Go with WebSockets, built around one goroutine per room; the frontend is SvelteKit.
 
-**Live demo:** https://lumoraboard-demo.onrender.com
-
-The demo runs on Render's free plan. After about 15 minutes without visitors it goes to sleep, and the first visit then takes up to a minute to wake it.
+> The demo runs on Render's free plan. After about 15 minutes without visitors it goes to sleep, and the first visit then takes up to a minute to wake it.
 
 ## Features
 

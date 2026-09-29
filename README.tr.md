@@ -1,12 +1,28 @@
+<div align="center">
+
 # LumoraBoard
 
-[English](README.md) · **Türkçe**
+**Canlı imleçler, özel odalar ve davet linkleriyle gerçek zamanlı ortak beyaz tahta.**
+
+**[Canlı demo →](https://lumoraboard-demo.onrender.com)**
+
+[English](README.md) · Türkçe
+
+<p>
+  <img src="https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white" alt="Go 1.25">
+  <img src="https://img.shields.io/badge/WebSocket-coder%2Fwebsocket-010101?logo=socketdotio&logoColor=white" alt="WebSocket">
+  <img src="https://img.shields.io/badge/SvelteKit-Svelte%205-FF3E00?logo=svelte&logoColor=white" alt="SvelteKit">
+  <img src="https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white" alt="TypeScript">
+  <img src="https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL">
+  <img src="https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white" alt="Docker">
+  <img src="https://img.shields.io/badge/Render-46E3B7?logo=render&logoColor=black" alt="Render">
+</p>
+
+</div>
 
 Gerçek zamanlı, ortak kullanılan bir beyaz tahta. Birden fazla kişi aynı tahtaya aynı anda çizer; herkes diğerlerinin çizimlerini ve imleçlerini anında görür. Arka uç Go ve WebSocket ile, her oda için ayrı bir goroutine olacak şekilde yazıldı; ön yüz SvelteKit ile yapıldı.
 
-**Canlı demo:** https://lumoraboard-demo.onrender.com
-
-Demo, Render'ın ücretsiz planında çalışıyor. Yaklaşık 15 dakika kimse girmezse uykuya geçer; sonraki ilk girişte uyanması bir dakikayı bulabilir.
+> Demo, Render'ın ücretsiz planında çalışıyor. Yaklaşık 15 dakika kimse girmezse uykuya geçer; sonraki ilk girişte uyanması bir dakikayı bulabilir.
 
 ## Özellikler
 
