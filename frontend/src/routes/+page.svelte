@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onDestroy, onMount } from 'svelte';
+	import { onDestroy, onMount, tick } from 'svelte';
 	import { page } from '$app/state';
 	import { replaceState } from '$app/navigation';
 	import { checkHealth, type BackendStatus } from '$lib/health';
@@ -24,11 +24,12 @@
 	} from '$lib/export';
 
 	const NAME_KEY = 'lumora.name';
+	const ROOM_KEY = 'lumora.room';
 	const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 	let health = $state<BackendStatus>('checking');
-	let room = $state('demo');
-	let roomInput = $state('demo');
+	let room = $state('');
+	let roomInput = $state('');
 	let name = $state('');
 	let socket = $state<ConnectionState>('closed');
 	let detail = $state('');
@@ -267,9 +268,26 @@
 		} catch {
 			// Storage can be unavailable (private mode); a guest name is fine.
 		}
+		// A link names its board; otherwise come back to the last board,
+		// or start a fresh one the visitor will own. The name goes into the
+		// URL so signing in returns here and the link can be shared.
 		const fromUrl = page.url.searchParams.get('room');
-		if (fromUrl && ROOM_RE.test(fromUrl)) room = roomInput = fromUrl;
+		let last = '';
+		try {
+			last = localStorage.getItem(ROOM_KEY) ?? '';
+		} catch {
+			// See above.
+		}
+		room = roomInput =
+			fromUrl && ROOM_RE.test(fromUrl) ? fromUrl : ROOM_RE.test(last) ? last : randomBoardName();
 		checkHealth().then((h) => (health = h));
+		// The router is not ready for replaceState until mount finishes.
+		await tick();
+		if (fromUrl !== room) {
+			const url = new URL(page.url);
+			url.searchParams.set('room', room);
+			replaceState(url, page.state);
+		}
 
 		try {
 			auth = await fetchAuthStatus();
@@ -337,6 +355,11 @@
 			gate = 'forbidden';
 			return;
 		}
+		try {
+			localStorage.setItem(ROOM_KEY, target);
+		} catch {
+			// Only a convenience.
+		}
 		store = newStore();
 		presence = new Presence();
 		chat = new ChatStore();
@@ -400,10 +423,14 @@
 		connect();
 	}
 
+	function randomBoardName(): string {
+		const bytes = crypto.getRandomValues(new Uint8Array(4));
+		return 'board-' + Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+	}
+
 	/** Opens a fresh board under a random name; the opener owns it. */
 	function newBoard() {
-		const bytes = crypto.getRandomValues(new Uint8Array(4));
-		room = roomInput = 'board-' + Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+		room = roomInput = randomBoardName();
 		const url = new URL(page.url);
 		url.searchParams.set('room', room);
 		replaceState(url, page.state);
@@ -447,7 +474,12 @@
 		location.reload();
 	}
 
-	let here = $derived(page.url.pathname + page.url.search);
+	// Where sign-in comes back to: this page, on the current board.
+	let here = $derived.by(() => {
+		const url = new URL(page.url);
+		if (room) url.searchParams.set('room', room);
+		return url.pathname + url.search;
+	});
 </script>
 
 <svelte:head>
