@@ -94,6 +94,27 @@ func (s *Service) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /auth/logout", s.sameOrigin(s.handleLogout))
 	mux.HandleFunc("POST /api/boards/{board}/invites", s.sameOrigin(s.handleCreateInvite))
 	mux.HandleFunc("POST /api/invites/{token}/accept", s.sameOrigin(s.handleAcceptInvite))
+	mux.HandleFunc("GET /api/boards/{board}/access", s.handleAccess)
+}
+
+// handleAccess answers, before any socket is opened, whether the caller
+// may open a board: 200 with the role, 401 to sign in, 403 for no access.
+// A socket can only say so with a close code, which some proxies lose
+// when it follows the upgrade at once; an HTTP status always arrives.
+func (s *Service) handleAccess(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	id, err := s.Authorize(r.WithContext(ctx), r.PathValue("board"))
+	switch {
+	case errors.Is(err, ws.ErrUnauthorized):
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+	case errors.Is(err, ws.ErrForbidden):
+		http.Error(w, err.Error(), http.StatusForbidden)
+	case err != nil:
+		s.fail(w, err)
+	default:
+		writeJSON(w, http.StatusOK, map[string]any{"role": id.Role})
+	}
 }
 
 // ---- ws.Authorizer -------------------------------------------------------

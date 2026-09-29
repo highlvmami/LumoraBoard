@@ -45,8 +45,7 @@ func run() error {
 	}
 	log.Info("starting", "version", version,
 		"cluster", os.Getenv("LUMORA_CLUSTER_SECRET") != "",
-		"database", os.Getenv("LUMORA_DATABASE_URL") != "",
-		"debug_dump", os.Getenv("LUMORA_DEBUG_TOKEN") != "")
+		"database", os.Getenv("LUMORA_DATABASE_URL") != "")
 
 	addr := os.Getenv("LUMORA_ADDR")
 	if addr == "" {
@@ -131,7 +130,7 @@ func run() error {
 	}
 	srv := server.New(server.Config{
 		Addr: addr, ShutdownTimeout: 10 * time.Second,
-		Version: version, DebugToken: os.Getenv("LUMORA_DEBUG_TOKEN"),
+		Version: version,
 	}, log, wsHandler, routes...)
 
 	// The hub and the listener stop together: the first error, or the

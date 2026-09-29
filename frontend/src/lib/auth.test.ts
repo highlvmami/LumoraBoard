@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { acceptInvite, createInvite, fetchAuthStatus, loginUrl } from './auth';
+import { acceptInvite, checkAccess, createInvite, fetchAuthStatus, loginUrl } from './auth';
 
 const json = (body: unknown, status = 200) =>
 	new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -14,6 +14,18 @@ describe('auth client', () => {
 		const s = await fetchAuthStatus(f as unknown as typeof fetch);
 		expect(s.providers[0].id).toBe('github');
 		expect(s.user).toBeUndefined();
+	});
+
+	it('checks board access before the socket', async () => {
+		const status = (code: number) => vi.fn(async () => new Response('', { status: code })) as unknown as typeof fetch;
+		expect(await checkAccess('b', status(200))).toBe('ok');
+		expect(await checkAccess('b', status(401))).toBe('signin');
+		expect(await checkAccess('b', status(403))).toBe('forbidden');
+		expect(await checkAccess('b', status(500))).toBe('ok');
+		const down = vi.fn(async () => {
+			throw new TypeError('offline');
+		}) as unknown as typeof fetch;
+		expect(await checkAccess('b', down)).toBe('ok');
 	});
 
 	it('creates and accepts invites, surfacing server messages', async () => {
