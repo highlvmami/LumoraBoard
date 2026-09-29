@@ -311,6 +311,11 @@ func (r *Room) updateStall() bool {
 	return r.stalled
 }
 
+// ErrReadOnly rejects ops from members whose role cannot edit. The check
+// lives in the room, not the transport, so every path that submits ops
+// goes through it.
+var ErrReadOnly = errors.New("read-only: your role cannot change this board")
+
 // ErrLoadFailed is returned by Join when the room could not load its board
 // from the store. Retrying later may succeed.
 var ErrLoadFailed = errors.New("room: could not load board")
@@ -397,6 +402,10 @@ func (r *Room) queueSnapshot() {
 // apply runs one op against the board. A rejected op goes back to the
 // sender only; an accepted one gets the next seq and is fanned out.
 func (r *Room) apply(in inbound) {
+	if !in.from.Role().CanEdit() {
+		r.reject(in.from, in.env.ClientOpID, ErrReadOnly)
+		return
+	}
 	seq := r.seq + 1
 	if err := r.board.Apply(in.op, seq, in.from.ID()); err != nil {
 		r.reject(in.from, in.env.ClientOpID, err)
@@ -478,7 +487,7 @@ func (r *Room) join(c *Client, since uint64) {
 	}))
 	r.members[c] = struct{}{}
 
-	hello := proto.Hello{ClientID: c.ID(), Seq: r.seq, Members: members}
+	hello := proto.Hello{ClientID: c.ID(), Seq: r.seq, Members: members, Role: c.Role()}
 	resume := r.canResume(since)
 	if resume {
 		hello.Resume = true

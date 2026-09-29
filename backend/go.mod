@@ -6,6 +6,7 @@ require (
 	github.com/coder/websocket v1.8.13
 	github.com/jackc/pgx/v5 v5.11.0
 	go.uber.org/goleak v1.3.0
+	golang.org/x/oauth2 v0.32.0
 	golang.org/x/sync v0.17.0
 )
 

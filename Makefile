@@ -6,7 +6,7 @@ dev: db-up
 DATABASE_URL ?= postgres://lumora:lumora@localhost:5432/lumora
 
 dev-backend:
-	cd backend && LUMORA_DATABASE_URL=$(DATABASE_URL) go run ./cmd/server
+	cd backend && LUMORA_DATABASE_URL=$(DATABASE_URL) LUMORA_DEV_LOGIN=1 go run ./cmd/server
 
 dev-frontend:
 	cd frontend && npm run dev

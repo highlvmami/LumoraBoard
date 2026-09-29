@@ -28,6 +28,9 @@ const (
 type Client struct {
 	id     string
 	name   string
+	user   string
+	avatar string
+	role   proto.Role
 	outbox chan []byte
 
 	once   sync.Once
@@ -54,11 +57,29 @@ func (c *Client) WithName(name string) *Client {
 	return c
 }
 
+// WithAccount sets the signed-in account behind the connection and its
+// role on the board. Like WithName, call it before Join. An empty role
+// means editor, which is what the server grants when sign-in is off.
+func (c *Client) WithAccount(user, avatar string, role proto.Role) *Client {
+	c.user, c.avatar, c.role = user, avatar, role
+	return c
+}
+
 // Name returns the client's display name, possibly empty.
 func (c *Client) Name() string { return c.name }
 
+// Role returns what the client may do on the board.
+func (c *Client) Role() proto.Role {
+	if c.role == "" {
+		return proto.RoleEditor
+	}
+	return c.role
+}
+
 // member describes the client on the wire.
-func (c *Client) member() proto.Member { return proto.Member{ID: c.id, Name: c.name} }
+func (c *Client) member() proto.Member {
+	return proto.Member{ID: c.id, Name: c.name, User: c.user, Avatar: c.avatar, Role: c.Role()}
+}
 
 // ID returns the client's identifier.
 func (c *Client) ID() string { return c.id }

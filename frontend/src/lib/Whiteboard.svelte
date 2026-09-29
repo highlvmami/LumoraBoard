@@ -19,11 +19,13 @@
 		clientId: string;
 		/** False while disconnected: the board is visible but read-only. */
 		editable: boolean;
+		/** The member's role cannot edit: hide the drawing tools altogether. */
+		readonly?: boolean;
 		onop: (op: Op) => void;
 		/** World position of the local pointer, or null when it left. */
 		oncursor: (p: Point | null) => void;
 	};
-	let { objects, cursors, clientId, editable, onop, oncursor }: Props = $props();
+	let { objects, cursors, clientId, editable, readonly = false, onop, oncursor }: Props = $props();
 
 	const TOOLS: { id: Tool; label: string; key: string; icon: string }[] = [
 		{ id: 'select', label: 'Select', key: 'v', icon: 'M5 3l14 8-6 2-3 6z' },
@@ -474,6 +476,7 @@
 		></textarea>
 	{/if}
 
+	{#if !readonly}
 	<div class="toolbar" role="toolbar" aria-label="Tools">
 		{#each TOOLS as t (t.id)}
 			<button
@@ -514,6 +517,7 @@
 			</button>
 		{/each}
 	</div>
+	{/if}
 
 	<div class="zoom">
 		<button type="button" aria-label="Zoom out" onclick={() => zoomBy(1 / 1.25)}>−</button>

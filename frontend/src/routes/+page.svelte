@@ -1,10 +1,12 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
 	import { page } from '$app/state';
+	import { replaceState } from '$app/navigation';
 	import { checkHealth, type BackendStatus } from '$lib/health';
-	import { BoardStore, sorted, type BoardObject, type Op, type Point } from '$lib/board';
+	import { BoardStore, canEdit, sorted, type BoardObject, type Op, type Point, type Role } from '$lib/board';
 	import { colorFor, displayName, Presence, throttle } from '$lib/presence';
-	import { connectRoom, type ConnectionState, type RoomConnection } from '$lib/ws';
+	import { CLOSE_FORBIDDEN, CLOSE_UNAUTHORIZED, connectRoom, type ConnectionState, type RoomConnection } from '$lib/ws';
+	import { acceptInvite, createInvite, fetchAuthStatus, loginUrl, logout, type AuthStatus } from '$lib/auth';
 	import Whiteboard, { type RemoteCursor } from '$lib/Whiteboard.svelte';
 
 	const NAME_KEY = 'lumora.name';
@@ -17,6 +19,11 @@
 	let socket = $state<ConnectionState>('closed');
 	let detail = $state('');
 	let notice = $state('');
+	/** Null until the server said how sign-in works. */
+	let auth = $state<AuthStatus | null>(null);
+	/** Why the board is not shown, if it is not. */
+	let gate = $state<'' | 'signin' | 'forbidden'>('');
+	let shareOpen = $state(false);
 
 	// Store and presence are plain objects; the ticks bump whenever they
 	// change so the derived values below re-read them. Board and presence
@@ -42,6 +49,11 @@
 		void boardTick;
 		return store.clientId;
 	});
+	let role = $derived.by((): Role => {
+		void boardTick;
+		return store.role;
+	});
+	let me = $derived(auth?.user?.name || name || 'You');
 	let members = $derived.by(() => {
 		void presenceTick;
 		return [...presence.members.values()];
@@ -64,7 +76,7 @@
 		noticeTimer = setTimeout(() => (notice = ''), 4000);
 	}
 
-	onMount(() => {
+	onMount(async () => {
 		try {
 			name = localStorage.getItem(NAME_KEY) ?? '';
 		} catch {
@@ -72,9 +84,49 @@
 		}
 		const fromUrl = page.url.searchParams.get('room');
 		if (fromUrl && ROOM_RE.test(fromUrl)) room = roomInput = fromUrl;
-		connect();
 		checkHealth().then((h) => (health = h));
+
+		try {
+			auth = await fetchAuthStatus();
+		} catch {
+			// An old or unreachable backend: behave as before sign-in existed.
+			auth = { enabled: false, guests: false, providers: [] };
+		}
+		if (auth.enabled && !auth.user) {
+			// Guests may watch; everyone else signs in first. An invite in
+			// the URL survives the round trip through the provider.
+			if (!auth.guests) {
+				gate = 'signin';
+				return;
+			}
+		}
+		const joined = await redeemInvite();
+		connect();
+		if (joined) flash(joined);
 	});
+
+	/**
+	 * Accepts ?invite=… once the user is signed in, then drops it from the
+	 * URL. Returns a message for the user, if any.
+	 */
+	async function redeemInvite(): Promise<string> {
+		const token = page.url.searchParams.get('invite');
+		if (!token || !auth?.user) return '';
+		let msg: string;
+		try {
+			const res = await acceptInvite(token);
+			room = roomInput = res.board;
+			msg = `You joined ${res.board} as ${res.role}.`;
+		} catch (e) {
+			msg = e instanceof Error ? e.message : String(e);
+		}
+		const url = new URL(page.url);
+		url.searchParams.delete('invite');
+		url.searchParams.set('room', room);
+		replaceState(url, page.state);
+		return msg;
+	}
+
 	onDestroy(() => {
 		conn?.close();
 		sendCursor.cancel();
@@ -82,6 +134,7 @@
 
 	function connect() {
 		conn?.close();
+		gate = '';
 		store = newStore();
 		presence = new Presence();
 		notice = '';
@@ -98,9 +151,11 @@
 					if (env.type === 'hello' && presence.receive(env)) presenceTick++;
 					if (store.receive(env)) boardTick++;
 				},
-				onState: (s, d) => {
+				onState: (s, d, code) => {
 					socket = s;
 					detail = d ?? '';
+					if (code === CLOSE_UNAUTHORIZED) gate = 'signin';
+					else if (code === CLOSE_FORBIDDEN) gate = 'forbidden';
 				}
 			},
 			{ since: () => store.seq, name: name.trim() }
@@ -118,7 +173,7 @@
 		}
 		const url = new URL(page.url);
 		url.searchParams.set('room', room);
-		history.replaceState(history.state, '', url);
+		replaceState(url, page.state);
 		connect();
 	}
 
@@ -138,12 +193,28 @@
 		conn?.sendCursor(p ? { x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10 } : { hidden: true });
 	}, 40);
 
-	function copyLink() {
-		navigator.clipboard?.writeText(page.url.href).then(
-			() => flash('Link copied.'),
-			() => flash(page.url.href)
+	function copy(text: string, what: string) {
+		navigator.clipboard?.writeText(text).then(
+			() => flash(`${what} copied.`),
+			() => flash(text)
 		);
 	}
+
+	async function invite(r: 'editor' | 'viewer') {
+		shareOpen = false;
+		try {
+			copy(await createInvite(room, r), r === 'editor' ? 'Edit link' : 'View link');
+		} catch (e) {
+			flash(e instanceof Error ? e.message : String(e));
+		}
+	}
+
+	async function signOut() {
+		await logout();
+		location.reload();
+	}
+
+	let here = $derived(page.url.pathname + page.url.search);
 </script>
 
 <svelte:head>
@@ -155,21 +226,40 @@
 		<strong class="logo">LumoraBoard</strong>
 		<form onsubmit={join}>
 			<input bind:value={roomInput} pattern={'[A-Za-z0-9_\\-]{1,64}'} required aria-label="Room" placeholder="room" />
-			<input bind:value={name} maxlength="32" aria-label="Your name" placeholder="your name" />
+			{#if !auth?.enabled}
+				<input bind:value={name} maxlength="32" aria-label="Your name" placeholder="your name" />
+			{/if}
 			<button type="submit">Join</button>
 		</form>
 		<div class="people" aria-label="People in this room">
-			<span class="avatar me" style:--c={colorFor(clientId || 'me')} title="{name || 'You'} (you)">
-				{(name || 'You').slice(0, 1).toUpperCase()}
+			<span class="avatar me" style:--c={colorFor(clientId || 'me')} title="{me} (you)">
+				{#if auth?.user?.avatar}<img src={auth.user.avatar} alt="" />{:else}{me.slice(0, 1).toUpperCase()}{/if}
 			</span>
 			{#each members as m (m.id)}
 				{@const label = displayName(m, m.id)}
-				<span class="avatar" style:--c={colorFor(m.id)} title={label} data-member={m.id}>
-					{label.replace('Guest ', '').slice(0, 1).toUpperCase()}
+				<span class="avatar" style:--c={colorFor(m.id)} title="{label}{m.role ? ` (${m.role})` : ''}" data-member={m.id}>
+					{#if m.avatar}<img src={m.avatar} alt="" />{:else}{label.replace('Guest ', '').slice(0, 1).toUpperCase()}{/if}
 				</span>
 			{/each}
 		</div>
-		<button type="button" class="share" onclick={copyLink}>Share</button>
+		<div class="share-wrap">
+			{#if auth?.enabled && role === 'owner'}
+				<button type="button" aria-expanded={shareOpen} onclick={() => (shareOpen = !shareOpen)}>Share</button>
+				{#if shareOpen}
+					<div class="menu" role="menu">
+						<button type="button" role="menuitem" onclick={() => invite('editor')}>Copy edit link</button>
+						<button type="button" role="menuitem" onclick={() => invite('viewer')}>Copy view-only link</button>
+					</div>
+				{/if}
+			{:else}
+				<button type="button" onclick={() => copy(page.url.href, 'Link')}>Share</button>
+			{/if}
+		</div>
+		{#if auth?.user}
+			<button type="button" class="quiet" onclick={signOut} title="Signed in as {auth.user.name}">Sign out</button>
+		{:else if auth?.enabled && auth.guests}
+			<button type="button" onclick={() => (gate = 'signin')}>Sign in to edit</button>
+		{/if}
 		<p class="status">
 			<span class="dot" data-status={socket}></span>
 			<strong data-status={socket}>{socket}</strong>
@@ -179,7 +269,33 @@
 	</header>
 
 	<main>
-		<Whiteboard {objects} {cursors} {clientId} editable={socket === 'open'} onop={send} oncursor={(p) => sendCursor.call(p)} />
+		{#if gate}
+			<section class="gate">
+				{#if gate === 'signin' && auth}
+					<h1>Sign in to open “{room}”</h1>
+					<p>LumoraBoard boards are private to the people their owner invites.</p>
+					<div class="providers">
+						{#each auth.providers as p (p.id)}
+							<a class="button primary" href={loginUrl(p.id, here)}>Continue with {p.name}</a>
+						{/each}
+					</div>
+				{:else}
+					<h1>No access to “{room}”</h1>
+					<p>Ask the board's owner for an invite link, or open another board from the box above.</p>
+				{/if}
+			</section>
+		{:else}
+			<Whiteboard
+				{objects}
+				{cursors}
+				{clientId}
+				editable={socket === 'open' && canEdit(role)}
+				readonly={!canEdit(role)}
+				onop={send}
+				oncursor={(p) => sendCursor.call(p)}
+			/>
+			{#if !canEdit(role) && socket === 'open'}<p class="viewonly">View only</p>{/if}
+		{/if}
 		{#if notice}<p class="notice" role="status">{notice}</p>{/if}
 		{#if socket === 'reconnecting'}<p class="banner">Connection lost, reconnecting…</p>{/if}
 	</main>
@@ -302,6 +418,85 @@
 	[data-status='down'],
 	[data-status='closed'] {
 		color: #b91c1c;
+	}
+	.avatar img {
+		width: 100%;
+		height: 100%;
+		border-radius: 50%;
+		object-fit: cover;
+	}
+	.share-wrap {
+		position: relative;
+	}
+	.menu {
+		position: absolute;
+		right: 0;
+		top: calc(100% + 4px);
+		z-index: 10;
+		display: grid;
+		min-width: 12rem;
+		padding: 4px;
+		background: white;
+		border: 1px solid #e4e4e7;
+		border-radius: 8px;
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+	}
+	.menu button {
+		border: 0;
+		text-align: left;
+	}
+	.menu button:hover {
+		background: #f4f4f5;
+	}
+	.button {
+		padding: 0.35rem 0.75rem;
+		border: 1px solid #d4d4d8;
+		border-radius: 6px;
+		background: white;
+		color: inherit;
+		font-size: 0.9rem;
+		text-decoration: none;
+	}
+	.button.primary {
+		background: #18181b;
+		border-color: #18181b;
+		color: white;
+		padding: 0.6rem 1rem;
+		text-align: center;
+	}
+	.quiet {
+		border-color: transparent !important;
+		color: #52525b;
+	}
+	.gate {
+		max-width: 26rem;
+		margin: 12vh auto 0;
+		padding: 0 1rem;
+		text-align: center;
+	}
+	.gate h1 {
+		font-size: 1.3rem;
+	}
+	.gate p {
+		color: #52525b;
+	}
+	.providers {
+		display: grid;
+		gap: 0.5rem;
+		margin-top: 1.5rem;
+	}
+	.viewonly {
+		position: absolute;
+		top: 12px;
+		left: 50%;
+		transform: translateX(-50%);
+		margin: 0;
+		padding: 0.35rem 0.8rem;
+		border-radius: 999px;
+		background: #e0e7ff;
+		color: #3730a3;
+		font-size: 0.85rem;
+		font-weight: 600;
 	}
 	@media (max-width: 640px) {
 		header {

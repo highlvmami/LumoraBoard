@@ -8,7 +8,7 @@
 
 import type { Envelope } from './ws';
 
-export type Member = { id: string; name?: string };
+export type Member = { id: string; name?: string; user?: string; avatar?: string; role?: string };
 export type Cursor = { x: number; y: number };
 
 /** Palette cursor colours are picked from, chosen to read on white. */
