@@ -14,6 +14,7 @@ import (
 
 	"github.com/highlvmami/lumoraboard/backend/internal/room"
 	"github.com/highlvmami/lumoraboard/backend/internal/server"
+	"github.com/highlvmami/lumoraboard/backend/internal/store"
 	"github.com/highlvmami/lumoraboard/backend/internal/ws"
 )
 
@@ -36,7 +37,23 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	hub := room.NewHub(room.DefaultConfig(), log)
+	roomCfg := room.DefaultConfig()
+	if url := os.Getenv("LUMORA_DATABASE_URL"); url != "" {
+		connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		pg, err := store.OpenPostgres(connectCtx, url)
+		cancel()
+		if err != nil {
+			return err
+		}
+		// Closed after g.Wait below: the hub has flushed every room by then.
+		defer pg.Close()
+		roomCfg.Store = pg
+		log.Info("persistence enabled", "store", "postgres")
+	} else {
+		log.Warn("LUMORA_DATABASE_URL not set; boards live in memory only")
+	}
+
+	hub := room.NewHub(roomCfg, log)
 	srv := server.New(server.Config{Addr: addr, ShutdownTimeout: 10 * time.Second}, log, ws.NewHandler(hub, wsCfg, log))
 
 	// The hub and the listener stop together: the first error, or the

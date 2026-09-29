@@ -8,6 +8,22 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: lumora
+          POSTGRES_PASSWORD: lumora
+          POSTGRES_DB: lumora
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lumora"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      LUMORA_TEST_DATABASE_URL: postgres://lumora:lumora@localhost:5432/lumora
     defaults:
       run:
         working-directory: backend
