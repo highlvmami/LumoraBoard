@@ -16,7 +16,7 @@ import (
 func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 
 func testServer() *Server {
-	return New(Config{Addr: "127.0.0.1:0", ShutdownTimeout: time.Second}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return New(Config{Addr: "127.0.0.1:0", ShutdownTimeout: time.Second}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 }
 
 func TestHealth(t *testing.T) {
