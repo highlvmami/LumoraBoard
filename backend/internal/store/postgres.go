@@ -21,21 +21,14 @@ type Postgres struct {
 	pool *pgxpool.Pool
 }
 
-// OpenPostgres connects, checks the connection and applies the schema.
-func OpenPostgres(ctx context.Context, url string) (*Postgres, error) {
-	pool, err := pgxpool.New(ctx, url)
-	if err != nil {
-		return nil, fmt.Errorf("store: connect: %w", err)
-	}
+// NewPostgres applies the schema on pool and returns the store. The
+// caller owns the pool.
+func NewPostgres(ctx context.Context, pool *pgxpool.Pool) (*Postgres, error) {
 	if _, err := pool.Exec(ctx, schema); err != nil {
-		pool.Close()
 		return nil, fmt.Errorf("store: apply schema: %w", err)
 	}
 	return &Postgres{pool: pool}, nil
 }
-
-// Close releases the pool.
-func (p *Postgres) Close() { p.pool.Close() }
 
 // Load implements Store.
 func (p *Postgres) Load(ctx context.Context, name string) (Loaded, error) {
