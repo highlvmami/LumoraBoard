@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/highlvmami/lumoraboard/backend/internal/board"
 )
 
@@ -74,16 +76,18 @@ func TestPostgres(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	s, err := OpenPostgres(ctx, url)
+	pool, err := pgxpool.New(ctx, url)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
-	// Applying the schema twice is fine.
-	s2, err := OpenPostgres(ctx, url)
+	defer pool.Close()
+	s, err := NewPostgres(ctx, pool)
 	if err != nil {
-		t.Fatalf("second open: %v", err)
+		t.Fatal(err)
 	}
-	s2.Close()
+	// Applying the schema twice is fine.
+	if _, err := NewPostgres(ctx, pool); err != nil {
+		t.Fatalf("second schema apply: %v", err)
+	}
 	testContract(t, s)
 }

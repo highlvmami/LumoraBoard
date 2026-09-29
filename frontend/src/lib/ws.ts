@@ -19,7 +19,8 @@ export type ConnectionState = 'connecting' | 'open' | 'reconnecting' | 'closed';
 
 export type RoomEvents = {
 	onMessage: (env: Envelope) => void;
-	onState: (state: ConnectionState, detail?: string) => void;
+	/** code is the close code when the state change came from a close. */
+	onState: (state: ConnectionState, detail?: string, code?: number) => void;
 };
 
 export type ConnectOptions = {
@@ -73,8 +74,12 @@ export function backoffDelay(attempt: number, min: number, max: number, random: 
 	return Math.floor(min + random() * Math.max(0, cap - min));
 }
 
+/** Server close codes for sign-in problems (see backend ws package). */
+export const CLOSE_UNAUTHORIZED = 4401;
+export const CLOSE_FORBIDDEN = 4403;
+
 /** Close codes after which reconnecting would only repeat the failure. */
-const FATAL_CLOSE_CODES = new Set([1003, 1008]);
+const FATAL_CLOSE_CODES = new Set([1003, 1008, CLOSE_UNAUTHORIZED, CLOSE_FORBIDDEN]);
 
 export type RoomConnection = {
 	/** Sends an op; returns the envelope so the caller can track its clientOpId. Throws if not open. */
@@ -118,12 +123,12 @@ export function connectRoom(room: string, events: RoomEvents, opts: ConnectOptio
 			socket = null;
 			const detail = e.reason ? `${e.code} ${e.reason}` : `${e.code}`;
 			if (closed || FATAL_CLOSE_CODES.has(e.code)) {
-				events.onState('closed', detail);
+				events.onState('closed', detail, e.code);
 				return;
 			}
 			const delay = backoffDelay(attempt, minDelay, maxDelay, random);
 			attempt += 1;
-			events.onState('reconnecting', `${detail}, retry in ${delay} ms`);
+			events.onState('reconnecting', `${detail}, retry in ${delay} ms`, e.code);
 			timer = setTimeout(open, delay);
 		};
 	}

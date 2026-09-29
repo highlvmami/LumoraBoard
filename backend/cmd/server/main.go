@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -10,8 +11,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/highlvmami/lumoraboard/backend/internal/auth"
 	"github.com/highlvmami/lumoraboard/backend/internal/room"
 	"github.com/highlvmami/lumoraboard/backend/internal/server"
 	"github.com/highlvmami/lumoraboard/backend/internal/store"
@@ -38,23 +41,43 @@ func run() error {
 	defer stop()
 
 	roomCfg := room.DefaultConfig()
+	var authStore auth.Store = auth.NewMemory()
 	if url := os.Getenv("LUMORA_DATABASE_URL"); url != "" {
 		connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		pg, err := store.OpenPostgres(connectCtx, url)
-		cancel()
+		defer cancel()
+		pool, err := pgxpool.New(connectCtx, url)
+		if err != nil {
+			return fmt.Errorf("connect to database: %w", err)
+		}
+		// Closed after g.Wait below: the hub has flushed every room by then.
+		defer pool.Close()
+		boards, err := store.NewPostgres(connectCtx, pool)
 		if err != nil {
 			return err
 		}
-		// Closed after g.Wait below: the hub has flushed every room by then.
-		defer pg.Close()
-		roomCfg.Store = pg
+		accounts, err := auth.NewPostgres(connectCtx, pool)
+		if err != nil {
+			return err
+		}
+		roomCfg.Store, authStore = boards, accounts
 		log.Info("persistence enabled", "store", "postgres")
 	} else {
-		log.Warn("LUMORA_DATABASE_URL not set; boards live in memory only")
+		log.Warn("LUMORA_DATABASE_URL not set; boards and accounts live in memory only")
+	}
+
+	authSvc := auth.New(authConfig(), authStore, log)
+	if authSvc.Enabled() {
+		log.Info("sign-in enabled")
+	} else {
+		log.Warn("no sign-in provider configured; everyone can edit every board")
 	}
 
 	hub := room.NewHub(roomCfg, log)
-	srv := server.New(server.Config{Addr: addr, ShutdownTimeout: 10 * time.Second}, log, ws.NewHandler(hub, wsCfg, log))
+	wsHandler := ws.NewHandler(hub, wsCfg, log)
+	if authSvc.Enabled() {
+		wsHandler.WithAuth(authSvc)
+	}
+	srv := server.New(server.Config{Addr: addr, ShutdownTimeout: 10 * time.Second}, log, wsHandler, authSvc)
 
 	// The hub and the listener stop together: the first error, or the
 	// signal, cancels the group context and the other winds down cleanly.
@@ -62,6 +85,23 @@ func run() error {
 	g.Go(func() error { return hub.Run(gctx) })
 	g.Go(func() error { return srv.Run(gctx) })
 	return g.Wait()
+}
+
+// authConfig reads sign-in settings. A provider is enabled when both its
+// client id and secret are set.
+func authConfig() auth.Config {
+	cfg := auth.Config{
+		PublicURL: envOr("LUMORA_PUBLIC_URL", "http://localhost:5173"),
+		DevLogin:  os.Getenv("LUMORA_DEV_LOGIN") == "1",
+		Guests:    os.Getenv("LUMORA_GUESTS") == "view",
+	}
+	if id, secret := os.Getenv("LUMORA_GITHUB_CLIENT_ID"), os.Getenv("LUMORA_GITHUB_CLIENT_SECRET"); id != "" && secret != "" {
+		cfg.Providers = append(cfg.Providers, auth.GitHub(id, secret))
+	}
+	if id, secret := os.Getenv("LUMORA_GOOGLE_CLIENT_ID"), os.Getenv("LUMORA_GOOGLE_CLIENT_SECRET"); id != "" && secret != "" {
+		cfg.Providers = append(cfg.Providers, auth.Google(id, secret))
+	}
+	return cfg
 }
 
 func envOr(key, fallback string) string {
