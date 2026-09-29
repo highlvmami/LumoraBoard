@@ -11,6 +11,11 @@ describe('roomSocketUrl', () => {
 		const loc = { protocol: 'https:', host: 'board.example' } as Location;
 		expect(roomSocketUrl('r', 42, loc)).toBe('wss://board.example/ws?room=r&since=42');
 	});
+
+	it('appends the display name', () => {
+		const loc = { protocol: 'http:', host: 'h' } as Location;
+		expect(roomSocketUrl('r', 0, loc, 'Ayşe K')).toBe('ws://h/ws?room=r&name=Ay%C5%9Fe%20K');
+	});
 });
 
 describe('parseEnvelope', () => {

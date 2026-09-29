@@ -101,7 +101,7 @@ func TestHelloCarriesMembers(t *testing.T) {
 	if err := json.Unmarshal(recv(t, b, proto.TypeHello).Payload, &hello); err != nil {
 		t.Fatal(err)
 	}
-	if hello.ClientID != "b" || len(hello.Members) != 1 || hello.Members[0] != "a" {
+	if hello.ClientID != "b" || len(hello.Members) != 1 || hello.Members[0].ID != "a" {
 		t.Fatalf("hello = %+v, want clientId b and members [a]", hello)
 	}
 	if got := recv(t, a, proto.TypeJoined); got.From != "b" {
@@ -540,4 +540,52 @@ func TestConcurrentUpdatesConverge(t *testing.T) {
 	if server.Version != 2*nOps+1 {
 		t.Fatalf("last writer version = %d, want %d", server.Version, 2*nOps+1)
 	}
+}
+
+// Presence is lossy: a recipient whose outbox is half full misses cursor
+// updates but is never dropped for them, and the sender never gets its own.
+func TestCursorIsLossyAndNeverDropsMembers(t *testing.T) {
+	h := startHub(t, testCfg())
+	ctx := context.Background()
+
+	a := NewClient("a", 16)
+	rm, err := h.Join(ctx, "r", a, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recv(t, a, proto.TypeHello)
+	b := NewClient("b", 4) // never drained after this
+	if _, err := h.Join(ctx, "r", b, 0); err != nil {
+		t.Fatal(err)
+	}
+	recv(t, a, proto.TypeJoined)
+
+	rm.Cursor(b, proto.Cursor{X: 7, Y: 8})
+	got := recv(t, a, proto.TypeCursor)
+	if got.From != "b" {
+		t.Fatalf("a got cursor from %q, want b", got.From)
+	}
+	// Flood from a. Updates the room queue cannot take are dropped at
+	// Cursor; the ones it takes are dropped per recipient once b's
+	// outbox is half full.
+	for i := range 50 {
+		rm.Cursor(a, proto.Cursor{X: float64(i)})
+	}
+	// A round trip through the room guarantees the queued cursors ran.
+	if err := submit(ctx, rm, a, addOp("sync")); err != nil {
+		t.Fatal(err)
+	}
+	recv(t, a, proto.TypeOp)
+
+	// b's outbox took cursors only while at most half full, so the op
+	// still fit and b is still a member.
+	if h.CursorDrops() == 0 {
+		t.Fatal("no cursor drops recorded")
+	}
+	select {
+	case <-b.Done():
+		t.Fatalf("b was dropped (%s) for presence traffic", b.Reason())
+	default:
+	}
+
 }

@@ -42,8 +42,9 @@ type Hub struct {
 	closed   chan struct{}
 	wg       sync.WaitGroup
 
-	rooms     map[string]*Room // owned by Run
-	slowDrops atomic.Int64
+	rooms       map[string]*Room // owned by Run
+	slowDrops   atomic.Int64
+	cursorDrops atomic.Int64
 }
 
 type hubJoin struct {
@@ -135,6 +136,10 @@ func (h *Hub) Join(ctx context.Context, room string, c *Client, since uint64) (*
 
 // SlowDrops reports how many clients rooms have dropped for not keeping up.
 func (h *Hub) SlowDrops() int64 { return h.slowDrops.Load() }
+
+// CursorDrops reports how many presence updates were discarded because a
+// room or a recipient was busy. Dropping them is by design.
+func (h *Hub) CursorDrops() int64 { return h.cursorDrops.Load() }
 
 // RoomCount reports how many rooms exist. It goes through the hub goroutine,
 // so it is exact but not free; use it for tests and diagnostics.
