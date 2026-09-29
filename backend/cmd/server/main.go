@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -35,11 +36,21 @@ func main() {
 func run() error {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
-	addr := envOr("LUMORA_ADDR", ":8080")
+	addr := os.Getenv("LUMORA_ADDR")
+	if addr == "" {
+		// Hosts such as Render say which port to listen on in PORT.
+		addr = ":" + envOr("PORT", "8080")
+	}
+	// Render sets RENDER_EXTERNAL_URL to the service's public address.
+	publicURL := envOr("LUMORA_PUBLIC_URL", envOr("RENDER_EXTERNAL_URL", "http://localhost:5173"))
 	wsCfg := ws.DefaultConfig()
-	// The Vite dev server proxies /ws from :5173, so allow localhost by
-	// default; production sets LUMORA_ALLOWED_ORIGINS explicitly.
-	wsCfg.OriginPatterns = strings.Split(envOr("LUMORA_ALLOWED_ORIGINS", "localhost:*,127.0.0.1:*"), ",")
+	// The Vite dev server proxies /ws from :5173, so localhost is allowed
+	// by default, as is the public URL's host.
+	origins := "localhost:*,127.0.0.1:*"
+	if u, err := url.Parse(publicURL); err == nil && u.Host != "" {
+		origins += "," + u.Host
+	}
+	wsCfg.OriginPatterns = strings.Split(envOr("LUMORA_ALLOWED_ORIGINS", origins), ",")
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -72,7 +83,7 @@ func run() error {
 		log.Warn("LUMORA_DATABASE_URL not set; boards and accounts live in memory only")
 	}
 
-	authCfg := authConfig()
+	authCfg := authConfig(publicURL)
 	authSvc := auth.New(authCfg, authStore, log)
 	if authSvc.Enabled() {
 		log.Info("sign-in enabled")
@@ -159,9 +170,9 @@ func clusterNode(leases store.Leases, addr string, log *slog.Logger) (*cluster.N
 
 // authConfig reads sign-in settings. A provider is enabled when both its
 // client id and secret are set.
-func authConfig() auth.Config {
+func authConfig(publicURL string) auth.Config {
 	cfg := auth.Config{
-		PublicURL: envOr("LUMORA_PUBLIC_URL", "http://localhost:5173"),
+		PublicURL: publicURL,
 		DevLogin:  os.Getenv("LUMORA_DEV_LOGIN") == "1",
 		Guests:    os.Getenv("LUMORA_GUESTS") == "view",
 	}
