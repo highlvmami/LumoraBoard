@@ -1,0 +1,49 @@
+name: Deploy
+
+# Deploys main to Fly.io once the repository has these secrets:
+# FLY_API_TOKEN, LUMORA_DATABASE_URL and LUMORA_CLUSTER_SECRET.
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency: deploy
+
+jobs:
+  fly:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - name: Check secrets
+        id: ready
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::notice::FLY_API_TOKEN is not set; skipping deploy."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.ready.outputs.ok == 'true'
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+        if: steps.ready.outputs.ok == 'true'
+      - name: Create the app on first deploy
+        if: steps.ready.outputs.ok == 'true'
+        run: |
+          app=$(sed -n 's/^app = "\(.*\)"/\1/p' fly.toml)
+          flyctl status --app "$app" >/dev/null 2>&1 || flyctl apps create "$app"
+      - name: Set secrets
+        if: steps.ready.outputs.ok == 'true'
+        env:
+          DB: ${{ secrets.LUMORA_DATABASE_URL }}
+          CLUSTER: ${{ secrets.LUMORA_CLUSTER_SECRET }}
+        run: flyctl secrets set --stage LUMORA_DATABASE_URL="$DB" LUMORA_CLUSTER_SECRET="$CLUSTER"
+      - name: Deploy two machines
+        if: steps.ready.outputs.ok == 'true'
+        run: flyctl deploy --remote-only --ha=true
