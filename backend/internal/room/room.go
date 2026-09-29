@@ -38,6 +38,7 @@ type Room struct {
 	directCh chan directMsg // server notices for one member; lossy
 	snapCh   chan chan []board.Object
 	closed   chan struct{} // closed when the actor exits
+	evicted  chan struct{} // closed by the hub when ownership is lost
 
 	// State below is owned by the run goroutine.
 	members map[*Client]struct{}
@@ -115,6 +116,7 @@ func newRoom(name string, hub *Hub) *Room {
 		directCh: make(chan directMsg, 64),
 		snapCh:   make(chan chan []board.Object),
 		closed:   make(chan struct{}),
+		evicted:  make(chan struct{}),
 		members:  make(map[*Client]struct{}),
 		board:    board.NewState(),
 		persist:  newPersister(name, hub),
@@ -242,6 +244,14 @@ func (r *Room) run(ctx context.Context) {
 		case <-ctx.Done():
 			r.closeAll(ReasonShutdown)
 			r.failWaiting(ErrRoomClosed)
+			close(r.persist.shutdown)
+			return
+
+		case <-r.evicted:
+			r.closeAll(ReasonMoved)
+			r.failWaiting(ErrNotOwner)
+			// Nothing waits on the persister now: another instance owns
+			// the board and fences these writes off.
 			close(r.persist.shutdown)
 			return
 

@@ -2,6 +2,7 @@ package room
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -32,6 +33,12 @@ type persister struct {
 	done     chan struct{}    // closed when run returns
 
 	giveUpAt time.Time // set once shutdown is noticed
+
+	// fence, when set, ties every write to the room's lease. Once a write
+	// is fenced off another instance owns the board, and the rest of the
+	// queue is dropped rather than retried.
+	fence  *store.Fence
+	fenced bool
 }
 
 // persistItem is exactly one of: a record, a chat message, a snapshot, or
@@ -135,11 +142,24 @@ func (p *persister) signal() {
 // stall is visible (Hub.PersistStalls). Once the server is stopping it
 // keeps trying only until the shutdown flush deadline.
 func (p *persister) retry(what string, fn func(context.Context) error) {
+	if p.fenced {
+		return
+	}
+	base := context.Background()
+	if p.fence != nil {
+		base = store.WithFence(base, *p.fence)
+	}
 	backoff := 50 * time.Millisecond
 	for attempt := 1; ; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), p.attemptTimeout())
+		ctx, cancel := context.WithTimeout(base, p.attemptTimeout())
 		err := fn(ctx)
 		cancel()
+		if errors.Is(err, store.ErrFenced) {
+			p.fenced = true
+			p.hub.persistFailures.Add(1)
+			p.log.Error("another instance owns this board now; dropping unsaved writes", "op", what)
+			return
+		}
 		if err == nil {
 			if attempt > 1 {
 				p.log.Info("store recovered", "op", what, "attempts", attempt)

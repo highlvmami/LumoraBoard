@@ -97,6 +97,7 @@ func testChatContract(t *testing.T, s Store) {
 func TestMemory(t *testing.T) {
 	testContract(t, NewMemory())
 	testChatContract(t, NewMemory())
+	testLeaseContract(t, NewMemory())
 }
 
 // TestPostgres runs against a real database when LUMORA_TEST_DATABASE_URL
@@ -123,4 +124,5 @@ func TestPostgres(t *testing.T) {
 	}
 	testContract(t, s)
 	testChatContract(t, s)
+	testLeaseContract(t, s)
 }
