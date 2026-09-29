@@ -33,6 +33,10 @@ const (
 	TypeChatMessage = "chat.message"
 	TypeChatTyping  = "chat.typing"
 
+	// TypeExport tells the connection that asked for an export how it is
+	// going. Best effort; clients can poll the REST status too.
+	TypeExport = "export.progress"
+
 	// TypeHello is sent to a client right after it joins a room.
 	TypeHello = "hello"
 	// TypeJoined and TypeLeft announce membership changes to the room.

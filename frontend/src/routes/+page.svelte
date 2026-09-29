@@ -10,6 +10,18 @@
 	import Whiteboard, { type RemoteCursor } from '$lib/Whiteboard.svelte';
 	import Chat from '$lib/Chat.svelte';
 	import { ChatStore, fetchOlder, typingLabel } from '$lib/chat';
+	import {
+		cancelExport,
+		download,
+		exportStatus,
+		importBackup,
+		jobFinished,
+		requestExport,
+		toPNG,
+		toSVG,
+		type ExportJob,
+		type ServerFormat
+	} from '$lib/export';
 
 	const NAME_KEY = 'lumora.name';
 	const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -27,6 +39,10 @@
 	let gate = $state<'' | 'signin' | 'forbidden'>('');
 	let shareOpen = $state(false);
 	let chatOpen = $state(false);
+	let exportOpen = $state(false);
+	/** The server export in flight or just finished, if any. */
+	let job = $state<ExportJob | null>(null);
+	let importInput = $state<HTMLInputElement>();
 	let unread = $state(0);
 	let selected = $state('');
 	let wb = $state<ReturnType<typeof Whiteboard>>();
@@ -149,6 +165,85 @@
 		if (matchMedia('(max-width: 640px)').matches) chatOpen = false;
 	}
 
+	// ---- export / import ---------------------------------------------
+
+	const FORMAT_LABEL: Record<ServerFormat, string> = { png: 'high-res PNG', pdf: 'PDF', json: 'JSON backup' };
+
+	async function exportLocal(kind: 'png' | 'svg') {
+		exportOpen = false;
+		try {
+			if (kind === 'svg') download(new Blob([toSVG(objects)], { type: 'image/svg+xml' }), `${room}.svg`);
+			else download(await toPNG(objects, 2), `${room}.png`);
+		} catch (e) {
+			flash(e instanceof Error ? e.message : String(e));
+		}
+	}
+
+	let jobPoll: ReturnType<typeof setInterval> | undefined;
+
+	async function exportServer(format: ServerFormat) {
+		exportOpen = false;
+		try {
+			track(await requestExport(room, format, clientId, format === 'png' ? 4 : 1));
+		} catch (e) {
+			flash(e instanceof Error ? e.message : String(e));
+		}
+	}
+
+	/** Takes a status from the socket, a poll or a request. */
+	function track(next: ExportJob) {
+		// Socket messages and REST answers can cross: nothing moves a job
+		// back from a final state, and a message for an older job while a
+		// newer one runs is stale.
+		if (job?.id === next.id && jobFinished(job)) return;
+		if (job && job.id !== next.id && !jobFinished(job)) return;
+		job = next;
+		clearInterval(jobPoll);
+		if (!jobFinished(next)) {
+			// Progress comes over the socket; polling covers a lost message
+			// or a reconnect in between.
+			jobPoll = setInterval(async () => {
+				if (!job || jobFinished(job)) return clearInterval(jobPoll);
+				try {
+					track(await exportStatus(job.id));
+				} catch {
+					// Try again on the next tick.
+				}
+			}, 2000);
+			return;
+		}
+		if (next.state === 'done' && next.file) download(next.file, `${next.board}.${next.format}`);
+		if (next.state === 'failed') flash(`Export failed: ${next.error ?? 'unknown error'}`);
+		setTimeout(() => {
+			if (job?.id === next.id) job = null;
+		}, 4000);
+	}
+
+	async function stopExport() {
+		if (!job) return;
+		await cancelExport(job.id);
+		track({ ...job, state: 'canceled' });
+	}
+
+	async function onImport(e: Event) {
+		const input = e.currentTarget as HTMLInputElement;
+		const file = input.files?.[0];
+		input.value = '';
+		exportOpen = false;
+		if (!file) return;
+		try {
+			const res = await importBackup(file);
+			room = roomInput = res.board;
+			const url = new URL(page.url);
+			url.searchParams.set('room', room);
+			replaceState(url, page.state);
+			connect();
+			flash(`Imported ${res.objects} objects into a new board.`);
+		} catch (err) {
+			flash(err instanceof Error ? err.message : String(err));
+		}
+	}
+
 	function toggleChat() {
 		chatOpen = !chatOpen;
 		if (chatOpen) unread = 0;
@@ -222,6 +317,7 @@
 		sendCursor.cancel();
 		sendTyping.cancel();
 		clearInterval(typingTimer);
+		clearInterval(jobPoll);
 	});
 
 	function connect() {
@@ -243,6 +339,10 @@
 					if (env.type === 'cursor' || env.type === 'joined' || env.type === 'left') {
 						if (presence.receive(env)) presenceTick++;
 						if (env.type === 'left' && chat.receive(env)) chatTick++;
+						return;
+					}
+					if (env.type === 'export.progress') {
+						track(env.payload as ExportJob);
 						return;
 					}
 					if (env.type === 'chat.message' || env.type === 'chat.typing') {
@@ -355,6 +455,28 @@
 			Chat{#if unread > 0}<span class="badge" aria-label="{unread} unread">{unread > 99 ? '99+' : unread}</span>{/if}
 		</button>
 		<div class="share-wrap">
+			<button type="button" aria-expanded={exportOpen} onclick={() => (exportOpen = !exportOpen)} disabled={!!gate}>Export</button>
+			{#if exportOpen}
+				<div class="menu start" role="menu">
+					<button type="button" role="menuitem" onclick={() => exportLocal('png')}>PNG image</button>
+					<button type="button" role="menuitem" onclick={() => exportLocal('svg')}>SVG vector</button>
+					<hr />
+					<button type="button" role="menuitem" onclick={() => exportServer('png')} disabled={!!job && !jobFinished(job)}
+						>High-res PNG (4×)</button
+					>
+					<button type="button" role="menuitem" onclick={() => exportServer('pdf')} disabled={!!job && !jobFinished(job)}>PDF</button>
+					<button type="button" role="menuitem" onclick={() => exportServer('json')} disabled={!!job && !jobFinished(job)}
+						>JSON backup</button
+					>
+					{#if !auth?.enabled || auth.user}
+						<hr />
+						<button type="button" role="menuitem" onclick={() => importInput?.click()}>Import backup…</button>
+					{/if}
+				</div>
+			{/if}
+			<input bind:this={importInput} type="file" accept="application/json,.json" hidden onchange={onImport} />
+		</div>
+		<div class="share-wrap">
 			{#if auth?.enabled && role === 'owner'}
 				<button type="button" aria-expanded={shareOpen} onclick={() => (shareOpen = !shareOpen)}>Share</button>
 				{#if shareOpen}
@@ -412,6 +534,20 @@
 				{#if !canEdit(role) && socket === 'open'}<p class="viewonly">View only</p>{/if}
 			{/if}
 			{#if notice}<p class="notice" role="status">{notice}</p>{/if}
+			{#if job}
+				<div class="job" role="status" data-job-state={job.state}>
+					{#if job.state === 'done'}
+						<span>{FORMAT_LABEL[job.format]} ready.</span>
+						<a href={job.file} download="{job.board}.{job.format}">Download again</a>
+					{:else if job.state === 'failed' || job.state === 'canceled'}
+						<span>Export {job.state}.</span>
+					{:else}
+						<span>{job.state === 'queued' ? 'Waiting to export' : 'Exporting'} {FORMAT_LABEL[job.format]}…</span>
+						<progress max="100" value={job.progress}></progress>
+						<button type="button" onclick={stopExport}>Cancel</button>
+					{/if}
+				</div>
+			{/if}
 			{#if socket === 'reconnecting'}<p class="banner">Connection lost, reconnecting…</p>{/if}
 		</div>
 		{#if chatOpen && !gate}
@@ -604,12 +740,50 @@
 		border-radius: 8px;
 		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
 	}
+	.menu.start {
+		left: 0;
+		right: auto;
+	}
 	.menu button {
 		border: 0;
 		text-align: left;
 	}
 	.menu button:hover {
 		background: #f4f4f5;
+	}
+	.menu button:disabled {
+		color: #a1a1aa;
+		background: none;
+	}
+	.menu hr {
+		width: 100%;
+		margin: 4px 0;
+		border: 0;
+		border-top: 1px solid #f4f4f5;
+	}
+	.job {
+		position: absolute;
+		left: 12px;
+		bottom: 12px;
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.45rem 0.7rem;
+		border: 1px solid #e4e4e7;
+		border-radius: 8px;
+		background: white;
+		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+		font-size: 0.85rem;
+	}
+	.job progress {
+		width: 6rem;
+	}
+	.job button {
+		border: 0;
+		background: none;
+		color: #b91c1c;
+		font: inherit;
+		cursor: pointer;
 	}
 	.button {
 		padding: 0.35rem 0.75rem;
