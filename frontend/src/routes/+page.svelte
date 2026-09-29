@@ -543,6 +543,38 @@
 		location.href = '/';
 	}
 
+	/** Author links shown under the entry screens. */
+	const AUTHOR = 'Muhammet Oruçoğlu';
+	const LINKS: { label: string; href: string; icon: string; solid?: boolean }[] = [
+		{
+			label: 'GitHub',
+			href: 'https://github.com/highlvmami',
+			solid: true,
+			icon: 'M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02a9.56 9.56 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2z'
+		},
+		{
+			label: 'LinkedIn',
+			href: 'https://www.linkedin.com/in/muhammet-oru%C3%A7o%C4%9Flu/',
+			solid: true,
+			icon: 'M4.98 3.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5zM3 9.75h4v11H3zm6.5 0h3.8v1.5h.05c.53-1 1.83-2.05 3.77-2.05 4.03 0 4.78 2.65 4.78 6.1v5.45h-4v-4.83c0-1.15-.02-2.63-1.6-2.63-1.6 0-1.85 1.25-1.85 2.55v4.91h-4z'
+		},
+		{
+			label: 'Instagram',
+			href: 'https://www.instagram.com/highlvmami/',
+			icon: 'M7 3h10a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4zm5 5a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm5.5-1.5v.01'
+		},
+		{
+			label: 'Email',
+			href: 'mailto:muhammetorucoglugfb@gmail.com',
+			icon: 'M4 6h16v12H4zM4 7l8 6 8-6'
+		},
+		{
+			label: 'Source code',
+			href: 'https://github.com/highlvmami/LumoraBoard',
+			icon: 'M8.5 7.5 4 12l4.5 4.5M15.5 7.5 20 12l-4.5 4.5'
+		}
+	];
+
 	// Where sign-in comes back to: this page, on the current board.
 	let here = $derived.by(() => {
 		const url = new URL(page.url);
@@ -748,6 +780,22 @@
 					oncursor={(p) => sendCursor.call(p)}
 				/>
 				{#if !canEdit(role) && socket === 'open'}<p class="viewonly">View only</p>{/if}
+			{/if}
+			{#if screen !== 'board' || gate}
+				<footer class="credits">
+					<span>Made by <strong>{AUTHOR}</strong></span>
+					{#each LINKS as l (l.href)}
+						<a href={l.href} target={l.href.startsWith('mailto:') ? undefined : '_blank'} rel="noopener noreferrer" title={l.label} aria-label={l.label}>
+							<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+								{#if l.solid}
+									<path d={l.icon} fill="currentColor" />
+								{:else}
+									<path d={l.icon} fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+								{/if}
+							</svg>
+						</a>
+					{/each}
+				</footer>
 			{/if}
 			{#if notice}<p class="notice" role="status">{notice}</p>{/if}
 			{#if job}
@@ -1345,7 +1393,60 @@
 		font-weight: 600;
 		box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35);
 	}
+	.credits {
+		position: absolute;
+		right: 16px;
+		bottom: 16px;
+		display: flex;
+		align-items: center;
+		gap: 0.35rem;
+		padding: 0.4rem 0.5rem 0.4rem 0.9rem;
+		border: 1px solid var(--line);
+		border-radius: 999px;
+		background: rgba(255, 255, 255, 0.85);
+		backdrop-filter: blur(8px);
+		box-shadow: 0 4px 16px rgba(15, 23, 42, 0.08);
+		font-size: 0.8rem;
+		color: var(--ink-3);
+	}
+	.credits strong {
+		color: var(--ink);
+		font-weight: 600;
+	}
+	.credits span {
+		margin-right: 0.25rem;
+	}
+	.credits a {
+		display: grid;
+		place-items: center;
+		width: 30px;
+		height: 30px;
+		border-radius: 50%;
+		color: var(--ink-2);
+		transition:
+			background 0.15s,
+			color 0.15s;
+	}
+	.credits a:hover {
+		background: var(--brand-soft);
+		color: var(--brand-strong);
+	}
 	@media (max-width: 640px) {
+		.credits {
+			left: 16px;
+			right: 16px;
+			bottom: 12px;
+			flex-wrap: wrap;
+			justify-content: center;
+			gap: 0.1rem 0.35rem;
+			padding: 0.5rem 0.75rem;
+			border-radius: 16px;
+		}
+		.credits span {
+			flex-basis: 100%;
+			margin: 0;
+			text-align: center;
+		}
 		header {
 			gap: 0.4rem 0.5rem;
 			padding: 0.45rem 0.75rem;
