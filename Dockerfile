@@ -18,6 +18,6 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /lumora ./cmd/server
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=server /lumora /lumora
 COPY --from=web /src/build /web
-ENV LUMORA_ADDR=:8080 LUMORA_STATIC_DIR=/web
+ENV LUMORA_STATIC_DIR=/web
 EXPOSE 8080
 ENTRYPOINT ["/lumora"]
