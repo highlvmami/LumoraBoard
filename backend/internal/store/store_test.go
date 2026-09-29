@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/highlvmami/lumoraboard/backend/internal/board"
+	"github.com/highlvmami/lumoraboard/backend/internal/proto"
 )
 
 // testContract runs the same behaviour checks against any Store.
@@ -65,7 +66,38 @@ func testContract(t *testing.T, s Store) {
 	}
 }
 
-func TestMemory(t *testing.T) { testContract(t, NewMemory()) }
+func testChatContract(t *testing.T, s Store) {
+	ctx := context.Background()
+	name := fmt.Sprintf("c%d", time.Now().UnixNano())
+	at := time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC)
+	var msgs []proto.ChatMessage
+	for i := uint64(1); i <= 7; i++ {
+		msgs = append(msgs, proto.ChatMessage{ID: i, From: "c", User: "u", Name: "Ayşe", Text: fmt.Sprint("m", i), At: at})
+	}
+	if err := s.AppendChat(ctx, name, msgs[:5]); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendChat(ctx, name, msgs[4:]); err != nil { // overlaps: idempotent
+		t.Fatal(err)
+	}
+	got, more, err := s.ChatBefore(ctx, name, 0, 3)
+	if err != nil || !more || len(got) != 3 || got[0].ID != 5 || got[2].ID != 7 || got[2].Text != "m7" || !got[2].At.Equal(at) {
+		t.Fatalf("latest page = %+v more=%v %v", got, more, err)
+	}
+	got, more, _ = s.ChatBefore(ctx, name, 5, 10)
+	if more || len(got) != 4 || got[0].ID != 1 || got[3].ID != 4 {
+		t.Fatalf("older page = %+v more=%v", got, more)
+	}
+	l, err := s.Load(ctx, name)
+	if err != nil || len(l.Chat) != 7 || l.MoreChat {
+		t.Fatalf("load chat = %d more=%v %v", len(l.Chat), l.MoreChat, err)
+	}
+}
+
+func TestMemory(t *testing.T) {
+	testContract(t, NewMemory())
+	testChatContract(t, NewMemory())
+}
 
 // TestPostgres runs against a real database when LUMORA_TEST_DATABASE_URL
 // is set (CI sets it); locally it is skipped without one.
@@ -90,4 +122,5 @@ func TestPostgres(t *testing.T) {
 		t.Fatalf("second schema apply: %v", err)
 	}
 	testContract(t, s)
+	testChatContract(t, s)
 }

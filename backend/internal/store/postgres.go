@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/highlvmami/lumoraboard/backend/internal/board"
+	"github.com/highlvmami/lumoraboard/backend/internal/proto"
 )
 
 //go:embed schema.sql
@@ -65,7 +68,58 @@ func (p *Postgres) Load(ctx context.Context, name string) (Loaded, error) {
 	if err != nil {
 		return Loaded{}, fmt.Errorf("store: load ops %q: %w", name, err)
 	}
+	out.Chat, out.MoreChat, err = p.ChatBefore(ctx, name, 0, ChatTail)
+	if err != nil {
+		return Loaded{}, err
+	}
 	return out, nil
+}
+
+// AppendChat implements Store.
+func (p *Postgres) AppendChat(ctx context.Context, name string, msgs []proto.ChatMessage) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+	batch := &pgx.Batch{}
+	for _, m := range msgs {
+		batch.Queue(`
+			INSERT INTO chat_messages (board, id, sender, user_id, name, avatar_url, text, ref, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			ON CONFLICT (board, id) DO NOTHING`,
+			name, int64(m.ID), m.From, m.User, m.Name, m.Avatar, m.Text, m.Ref, m.At)
+	}
+	if err := p.pool.SendBatch(ctx, batch).Close(); err != nil {
+		return fmt.Errorf("store: append chat %q: %w", name, err)
+	}
+	return nil
+}
+
+// ChatBefore implements Store.
+func (p *Postgres) ChatBefore(ctx context.Context, name string, before uint64, limit int) ([]proto.ChatMessage, bool, error) {
+	if before == 0 {
+		before = math.MaxInt64
+	}
+	// One extra row tells whether there is more.
+	rows, err := p.pool.Query(ctx, `
+		SELECT id, sender, user_id, name, avatar_url, text, ref, created_at FROM chat_messages
+		WHERE board = $1 AND id < $2 ORDER BY id DESC LIMIT $3`, name, int64(min(before, math.MaxInt64)), limit+1)
+	if err != nil {
+		return nil, false, fmt.Errorf("store: chat %q: %w", name, err)
+	}
+	msgs, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (proto.ChatMessage, error) {
+		var m proto.ChatMessage
+		err := row.Scan(&m.ID, &m.From, &m.User, &m.Name, &m.Avatar, &m.Text, &m.Ref, &m.At)
+		return m, err
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("store: chat %q: %w", name, err)
+	}
+	more := len(msgs) > limit
+	if more {
+		msgs = msgs[:limit]
+	}
+	slices.Reverse(msgs)
+	return msgs, more, nil
 }
 
 // Append implements Store. One statement per batch; ON CONFLICT makes a

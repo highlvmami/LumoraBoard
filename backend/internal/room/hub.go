@@ -41,6 +41,11 @@ type Config struct {
 	SnapshotEvery int
 	// ShutdownFlush is how long a stopping server keeps retrying writes.
 	ShutdownFlush time.Duration
+
+	// ChatBurst and ChatRate limit chat per account (per connection for
+	// anonymous members): bursts of ChatBurst, refilled at ChatRate/s.
+	ChatBurst int
+	ChatRate  float64
 }
 
 // withDefaults fills persistence settings a caller left zero.
@@ -62,6 +67,12 @@ func (c Config) withDefaults() Config {
 	}
 	if c.ShutdownFlush <= 0 {
 		c.ShutdownFlush = 5 * time.Second
+	}
+	if c.ChatBurst <= 0 {
+		c.ChatBurst = 5
+	}
+	if c.ChatRate <= 0 {
+		c.ChatRate = 1
 	}
 	return c
 }
