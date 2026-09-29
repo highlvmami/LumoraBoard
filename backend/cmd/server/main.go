@@ -101,7 +101,12 @@ func run() error {
 	chat := ws.NewChatHistory(roomCfg.Store, boardAuth, log)
 	exports := export.New(export.Config{}, hub, hub, log)
 	exportHandler := export.NewHandler(exports, roomCfg.Store, boardAuth, authCfg.PublicURL, log)
-	srv := server.New(server.Config{Addr: addr, ShutdownTimeout: 10 * time.Second}, log, wsHandler, authSvc, chat, exportHandler)
+	routes := []server.Routes{authSvc, chat, exportHandler}
+	if dir := os.Getenv("LUMORA_STATIC_DIR"); dir != "" {
+		// The built frontend, served from the same origin as the API.
+		routes = append(routes, server.NewStatic(dir))
+	}
+	srv := server.New(server.Config{Addr: addr, ShutdownTimeout: 10 * time.Second}, log, wsHandler, routes...)
 
 	// The hub and the listener stop together: the first error, or the
 	// signal, cancels the group context and the other winds down cleanly.
@@ -135,7 +140,8 @@ func clusterNode(leases store.Leases, addr string, log *slog.Logger) (*cluster.N
 	if len(secret) < 16 {
 		return nil, errors.New("LUMORA_CLUSTER_SECRET must be at least 16 characters")
 	}
-	advertise := os.Getenv("LUMORA_ADVERTISE_URL")
+	// Both may name platform variables, e.g. http://[${FLY_PRIVATE_IP}]:8080.
+	advertise := os.ExpandEnv(os.Getenv("LUMORA_ADVERTISE_URL"))
 	if advertise == "" {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
@@ -146,7 +152,7 @@ func clusterNode(leases store.Leases, addr string, log *slog.Logger) (*cluster.N
 		}
 		advertise = "http://" + net.JoinHostPort(host, port)
 	}
-	node := cluster.New(cluster.Config{Instance: os.Getenv("LUMORA_INSTANCE"), Addr: advertise}, leases, log)
+	node := cluster.New(cluster.Config{Instance: os.ExpandEnv(os.Getenv("LUMORA_INSTANCE")), Addr: advertise}, leases, log)
 	log.Info("cluster mode", "instance", node.Instance(), "advertise", advertise)
 	return node, nil
 }
