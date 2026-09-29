@@ -5,7 +5,7 @@
  */
 
 import type { BoardObject, Point } from './board';
-import { bounds, STICKY_SIZE, TEXT_LINE, TEXT_SIZE, type Box } from './geometry';
+import { bounds, STICKY_SIZE, TEXT_LINE, TEXT_SIZE, textSize, type Box } from './geometry';
 import { drawObject, FONT } from './render';
 
 const MARGIN = 32;
@@ -47,12 +47,12 @@ function strokePath(ox: number, oy: number, pts: Point[]): string {
 	return `${d} L${n(ox + last.x)} ${n(oy + last.y)}`;
 }
 
-function textSvg(text: string, x: number, y: number, color: string): string {
+function textSvg(text: string, x: number, y: number, color: string, size = TEXT_SIZE): string {
 	const lines = text.split('\n');
 	const spans = lines
-		.map((l, i) => `<tspan x="${n(x)}" y="${n(y + i * TEXT_SIZE * TEXT_LINE)}">${esc(l) || ' '}</tspan>`)
+		.map((l, i) => `<tspan x="${n(x)}" y="${n(y + i * size * TEXT_LINE)}">${esc(l) || ' '}</tspan>`)
 		.join('');
-	return `<text font-size="${TEXT_SIZE}" dominant-baseline="hanging" fill="${color}" xml:space="preserve">${spans}</text>`;
+	return `<text font-size="${n(size)}" dominant-baseline="hanging" fill="${color}" xml:space="preserve">${spans}</text>`;
 }
 
 function objectSvg(o: BoardObject): string {
@@ -89,7 +89,7 @@ function objectSvg(o: BoardObject): string {
 			);
 		}
 		case 'text':
-			return textSvg(o.text ?? '', o.x, o.y, c);
+			return textSvg(o.text ?? '', o.x, o.y, c, textSize(o));
 		case 'sticky': {
 			const sw = o.w || STICKY_SIZE;
 			const sh = o.h || STICKY_SIZE;

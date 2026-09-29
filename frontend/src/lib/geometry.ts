@@ -4,7 +4,7 @@
  * x/y, so moving any object is a single x/y update.
  */
 
-import type { BoardObject, Point } from './board';
+import type { BoardObject, Patch, Point } from './board';
 
 export type Box = { x: number; y: number; w: number; h: number };
 
@@ -12,6 +12,71 @@ export type Box = { x: number; y: number; w: number; h: number };
 export const TEXT_SIZE = 20;
 export const TEXT_LINE = 1.25;
 export const STICKY_SIZE = 160;
+
+/**
+ * Font size of a text object. It follows the box height, so resizing the
+ * box scales the text; text that was never resized has
+ * h = lines * TEXT_SIZE * TEXT_LINE and comes out at TEXT_SIZE.
+ */
+export function textSize(o: Pick<BoardObject, 'text' | 'h'>): number {
+	const lines = (o.text ?? '').split('\n').length;
+	return o.h && o.h > 0 ? o.h / (lines * TEXT_LINE) : TEXT_SIZE;
+}
+
+/** Smallest box a resize may produce, in world units. */
+export const MIN_SIZE = 8;
+
+/** Corners of a box, clockwise from top-left. */
+export function corners(b: Box): Point[] {
+	return [
+		{ x: b.x, y: b.y },
+		{ x: b.x + b.w, y: b.y },
+		{ x: b.x + b.w, y: b.y + b.h },
+		{ x: b.x, y: b.y + b.h }
+	];
+}
+
+/**
+ * The box a corner drag produces: the opposite corner stays put and the
+ * dragged one follows p, without flipping past the fixed corner. With
+ * keepAspect the box keeps from's proportions.
+ */
+export function dragCorner(from: Box, corner: number, p: Point, keepAspect: boolean): Box {
+	const anchor = corners(from)[(corner + 2) % 4];
+	const sx = corner === 1 || corner === 2 ? 1 : -1;
+	const sy = corner === 2 || corner === 3 ? 1 : -1;
+	let w = Math.max(MIN_SIZE, (p.x - anchor.x) * sx);
+	let h = Math.max(MIN_SIZE, (p.y - anchor.y) * sy);
+	if (keepAspect && from.w > 0 && from.h > 0) {
+		const k = Math.max(w / from.w, h / from.h, MIN_SIZE / Math.min(from.w, from.h));
+		w = from.w * k;
+		h = from.h * k;
+	}
+	return { x: sx > 0 ? anchor.x : anchor.x - w, y: sy > 0 ? anchor.y : anchor.y - h, w, h };
+}
+
+/** Whether resizing o should keep its proportions (text scales as a whole). */
+export const keepsAspect = (o: BoardObject) => o.kind === 'text';
+
+/**
+ * The patch that fits o into box to, where from is its current bounds().
+ * Strokes and arrows scale their points; boxes take the new size.
+ */
+export function resizePatch(o: BoardObject, from: Box, to: Box): Patch {
+	// A flat line (w or h near 0) cannot stretch along that axis.
+	const sx = from.w > 1 ? to.w / from.w : 1;
+	const sy = from.h > 1 ? to.h / from.h : 1;
+	const map = (x: number, y: number) => ({ x: to.x + (x - from.x) * sx, y: to.y + (y - from.y) * sy });
+	switch (o.kind) {
+		case 'stroke':
+		case 'arrow': {
+			const at = map(o.x, o.y);
+			return { ...at, points: (o.points ?? []).map((q) => ({ x: q.x * sx, y: q.y * sy })) };
+		}
+		default:
+			return { x: to.x, y: to.y, w: to.w, h: to.h };
+	}
+}
 
 /** Rect from two corners, with non-negative size. */
 export function boxFrom(a: Point, b: Point): Box {

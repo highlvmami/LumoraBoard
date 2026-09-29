@@ -157,3 +157,27 @@ func TestBadBackupsAreRefused(t *testing.T) {
 		t.Fatalf("empty backup: %v", err)
 	}
 }
+
+func TestFontSizeFollowsTheTextBox(t *testing.T) {
+	cases := []struct {
+		o    board.Object
+		want float64
+	}{
+		{board.Object{Kind: board.KindText, Text: "hi", H: 25}, 20},
+		{board.Object{Kind: board.KindText, Text: "a\nb", H: 100}, 40},
+		{board.Object{Kind: board.KindText, Text: "no height"}, 20},
+	}
+	for _, c := range cases {
+		if got := fontSize(c.o); got != c.want {
+			t.Errorf("fontSize(%q, h=%v) = %v, want %v", c.o.Text, c.o.H, got, c.want)
+		}
+	}
+	// Big text still renders in both formats.
+	objs := []board.Object{{ID: "t", Kind: board.KindText, Text: "big", W: 120, H: 100}}
+	if _, err := renderPNG(context.Background(), objs, 1, func(int, int) {}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := renderPDF(context.Background(), objs, func(int, int) {}); err != nil {
+		t.Fatal(err)
+	}
+}

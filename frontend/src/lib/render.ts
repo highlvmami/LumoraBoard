@@ -4,8 +4,8 @@
  * counts a whiteboard sees; a layered canvas can come later if needed.
  */
 
-import type { BoardObject, Point } from './board';
-import { bounds, STICKY_SIZE, TEXT_LINE, TEXT_SIZE } from './geometry';
+import type { BoardObject, Patch, Point } from './board';
+import { bounds, corners, STICKY_SIZE, TEXT_LINE, TEXT_SIZE, textSize, type Box } from './geometry';
 import type { Viewport } from './viewport';
 
 export const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
@@ -15,8 +15,10 @@ export type DrawOptions = {
 	selected?: string;
 	/** Object being drawn locally and not sent yet (shape preview). */
 	draft?: BoardObject | null;
-	/** Live drag position for an object, overriding its own. */
-	moving?: { id: string; x: number; y: number } | null;
+	/** Live drag or resize of an object, overriding its own fields. */
+	moving?: ({ id: string } & Patch) | null;
+	/** Draw resize handles on the selection. */
+	handles?: boolean;
 	/** Object hidden while its text is being edited in place. */
 	hidden?: string;
 };
@@ -37,22 +39,39 @@ export function draw(
 	let selected: BoardObject | undefined;
 	for (let o of objects) {
 		if (o.id === opts.hidden) continue;
-		if (opts.moving?.id === o.id) o = { ...o, x: opts.moving.x, y: opts.moving.y };
+		if (opts.moving?.id === o.id) o = { ...o, ...opts.moving };
 		drawObject(ctx, o);
 		if (o.id === opts.selected) selected = o;
 	}
 	if (opts.draft) drawObject(ctx, opts.draft);
 
 	if (selected) {
-		const b = bounds(selected);
-		const pad = 4 / v.scale;
+		const b = selectionBox(selected, v.scale);
 		ctx.save();
-		ctx.strokeStyle = '#2563eb';
-		ctx.lineWidth = 1 / v.scale;
-		ctx.setLineDash([4 / v.scale, 3 / v.scale]);
-		ctx.strokeRect(b.x - pad, b.y - pad, b.w + 2 * pad, b.h + 2 * pad);
+		ctx.strokeStyle = '#6366f1';
+		ctx.lineWidth = 1.5 / v.scale;
+		if (!opts.handles) ctx.setLineDash([4 / v.scale, 3 / v.scale]);
+		ctx.strokeRect(b.x, b.y, b.w, b.h);
+		if (opts.handles) {
+			const r = HANDLE / 2 / v.scale;
+			ctx.fillStyle = 'white';
+			for (const c of corners(b)) {
+				ctx.fillRect(c.x - r, c.y - r, 2 * r, 2 * r);
+				ctx.strokeRect(c.x - r, c.y - r, 2 * r, 2 * r);
+			}
+		}
 		ctx.restore();
 	}
+}
+
+/** Size of a resize handle, in screen pixels. */
+export const HANDLE = 10;
+
+/** The selection outline: the object's bounds plus a few screen pixels. */
+export function selectionBox(o: BoardObject, scale: number): Box {
+	const b = bounds(o);
+	const pad = 4 / scale;
+	return { x: b.x - pad, y: b.y - pad, w: b.w + 2 * pad, h: b.h + 2 * pad };
 }
 
 function drawGrid(ctx: CanvasRenderingContext2D, v: Viewport, width: number, height: number) {
@@ -97,7 +116,7 @@ export function drawObject(ctx: CanvasRenderingContext2D, o: BoardObject): void 
 			drawArrow(ctx, o.x, o.y, o.points ?? []);
 			break;
 		case 'text':
-			drawText(ctx, o.text ?? '', o.x, o.y);
+			drawText(ctx, o.text ?? '', o.x, o.y, textSize(o));
 			break;
 		case 'sticky': {
 			const w = o.w || STICKY_SIZE;
@@ -157,18 +176,21 @@ function drawArrow(ctx: CanvasRenderingContext2D, ox: number, oy: number, pts: P
 	ctx.fill();
 }
 
-function drawText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number) {
-	ctx.font = `${TEXT_SIZE}px ${FONT}`;
+function drawText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, size = TEXT_SIZE) {
+	ctx.font = `${size}px ${FONT}`;
 	ctx.textBaseline = 'top';
-	text.split('\n').forEach((line, i) => ctx.fillText(line, x, y + i * TEXT_SIZE * TEXT_LINE));
+	text.split('\n').forEach((line, i) => ctx.fillText(line, x, y + i * size * TEXT_LINE));
 }
 
 /** Size of a text block in world units, for its bounds. */
-export function measureText(ctx: CanvasRenderingContext2D, text: string): { w: number; h: number } {
+export function measureText(ctx: CanvasRenderingContext2D, text: string, size = TEXT_SIZE): { w: number; h: number } {
 	ctx.save();
-	ctx.font = `${TEXT_SIZE}px ${FONT}`;
+	ctx.font = `${size}px ${FONT}`;
 	const lines = text.split('\n');
 	const w = Math.max(...lines.map((l) => ctx.measureText(l).width));
 	ctx.restore();
-	return { w: Math.ceil(w), h: Math.ceil(lines.length * TEXT_SIZE * TEXT_LINE) };
+	// Default-size text keeps a whole-number height (what textSize() reads
+	// back as TEXT_SIZE); resized text keeps its exact height.
+	const h = lines.length * size * TEXT_LINE;
+	return { w: Math.ceil(w), h: size === TEXT_SIZE ? Math.ceil(h) : h };
 }

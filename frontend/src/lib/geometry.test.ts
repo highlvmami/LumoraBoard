@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardObject } from './board';
-import { bounds, boxFrom, distToSegment, hits, simplify, topmostAt } from './geometry';
+import { bounds, boxFrom, distToSegment, dragCorner, hits, MIN_SIZE, resizePatch, simplify, textSize, topmostAt } from './geometry';
 
 const obj = (o: Partial<BoardObject> & Pick<BoardObject, 'id' | 'kind'>): BoardObject => ({
 	x: 0,
@@ -58,5 +58,44 @@ describe('geometry', () => {
 	it('simplifies dense points but keeps both ends', () => {
 		const pts = [0, 0.5, 1, 1.5, 2, 5, 5.2].map((x) => ({ x, y: 0 }));
 		expect(simplify(pts, 2).map((p) => p.x)).toEqual([0, 2, 5, 5.2]);
+	});
+});
+
+describe('resizing', () => {
+	const box = { x: 10, y: 20, w: 100, h: 50 };
+
+	it('keeps the opposite corner fixed', () => {
+		// Drag the bottom-right corner out; top-left stays at 10,20.
+		expect(dragCorner(box, 2, { x: 210, y: 120 }, false)).toEqual({ x: 10, y: 20, w: 200, h: 100 });
+		// Drag the top-left corner in; bottom-right stays at 110,70.
+		expect(dragCorner(box, 0, { x: 60, y: 45 }, false)).toEqual({ x: 60, y: 45, w: 50, h: 25 });
+	});
+
+	it('does not flip past the fixed corner', () => {
+		const b = dragCorner(box, 2, { x: -500, y: -500 }, false);
+		expect(b).toEqual({ x: 10, y: 20, w: MIN_SIZE, h: MIN_SIZE });
+	});
+
+	it('keeps proportions when asked', () => {
+		const b = dragCorner(box, 2, { x: 310, y: 30 }, true);
+		expect(b.w / b.h).toBeCloseTo(2);
+		expect(b.w).toBe(300);
+	});
+
+	it('scales stroke and arrow points', () => {
+		const o = obj({ id: 'a', kind: 'arrow', x: 10, y: 20, points: [{ x: 0, y: 0 }, { x: 100, y: 50 }] });
+		const p = resizePatch(o, box, { x: 10, y: 20, w: 200, h: 100 });
+		expect(p).toEqual({ x: 10, y: 20, points: [{ x: 0, y: 0 }, { x: 200, y: 100 }] });
+	});
+
+	it('gives boxes the new size', () => {
+		const o = obj({ id: 'r', kind: 'rect', x: 10, y: 20, w: 100, h: 50 });
+		expect(resizePatch(o, box, { x: 0, y: 0, w: 30, h: 40 })).toEqual({ x: 0, y: 0, w: 30, h: 40 });
+	});
+
+	it('derives text size from the box height', () => {
+		expect(textSize({ text: 'hi', h: 25 })).toBe(20);
+		expect(textSize({ text: 'a\nb', h: 100 })).toBe(40);
+		expect(textSize({ text: 'hi' })).toBe(20);
 	});
 });

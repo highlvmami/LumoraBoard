@@ -6,10 +6,23 @@
 
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
-	import type { BoardObject, Op, Point } from './board';
-	import { bounds, boxFrom, TEXT_LINE, TEXT_SIZE, topmostAt } from './geometry';
+	import type { BoardObject, Op, Patch, Point } from './board';
+	import {
+		bounds,
+		boxFrom,
+		corners,
+		dragCorner,
+		keepsAspect,
+		MIN_SIZE,
+		resizePatch,
+		TEXT_LINE,
+		TEXT_SIZE,
+		textSize,
+		topmostAt,
+		type Box
+	} from './geometry';
 	import { throttle } from './presence';
-	import { draw, FONT, measureText } from './render';
+	import { draw, FONT, HANDLE, measureText, selectionBox } from './render';
 	import { centerOn, identity, panBy, toScreen, toWorld, zoomAt, type Viewport } from './viewport';
 
 	type Props = {
@@ -60,6 +73,15 @@
 		{ id: 'eraser', label: 'Eraser', key: 'e', icon: 'M7 20h13M4 15l9-9 6 6-7 7H8z' }
 	];
 	const COLORS = ['#1f2937', '#e11d48', '#2563eb', '#16a34a', '#d97706', '#7c3aed'];
+	/** The rest of the palette, behind the "More colors" button. */
+	const MORE_COLORS = [
+		'#000000', '#6b7280', '#9ca3af', '#ffffff',
+		'#dc2626', '#f97316', '#f59e0b', '#eab308',
+		'#84cc16', '#22c55e', '#10b981', '#14b8a6',
+		'#06b6d4', '#0ea5e9', '#3b82f6', '#6366f1',
+		'#8b5cf6', '#a855f7', '#d946ef', '#ec4899',
+		'#f43f5e', '#92400e', '#1e3a8a', '#064e3b'
+	];
 	const WIDTHS = [2, 4, 8];
 
 	let tool = $state<Tool>('pen');
@@ -67,11 +89,15 @@
 	let width = $state(WIDTHS[1]);
 	let view = $state<Viewport>(identity());
 	let draft = $state<BoardObject | null>(null);
-	let moving = $state<{ id: string; x: number; y: number } | null>(null);
+	/** Live drag or resize of one object, drawn over its confirmed state. */
+	let moving = $state<({ id: string } & Patch) | null>(null);
+	let paletteOpen = $state(false);
+	/** Corner handle under the pointer, for the cursor; -1 for none. */
+	let hoverCorner = $state(-1);
 	let spaceHeld = $state(false);
 
 	/** In-place text editor, in world coordinates. */
-	let editor = $state<{ id: string | null; x: number; y: number; text: string } | null>(null);
+	let editor = $state<{ id: string | null; x: number; y: number; text: string; size: number } | null>(null);
 	let textarea = $state<HTMLTextAreaElement>();
 
 	let container: HTMLDivElement;
@@ -86,13 +112,13 @@
 		if (frame || !ctx) return;
 		frame = requestAnimationFrame(() => {
 			frame = 0;
-			if (ctx) draw(ctx, objects, view, size, { selected, draft, moving, hidden: editor?.id ?? undefined });
+			if (ctx) draw(ctx, objects, view, size, { selected, draft, moving, hidden: editor?.id ?? undefined, handles: showHandles });
 		});
 	}
 
 	$effect(() => {
 		// Track everything draw() reads.
-		void [objects, view, size, selected, draft, moving, editor?.id];
+		void [objects, view, size, selected, draft, moving, editor?.id, showHandles];
 		scheduleDraw();
 	});
 
@@ -157,6 +183,7 @@
 		| { type: 'pen'; id: string; origin: Point; last: Point; count: number }
 		| { type: 'shape'; kind: 'rect' | 'ellipse' | 'arrow'; start: Point }
 		| { type: 'move'; id: string; start: Point; orig: Point }
+		| { type: 'resize'; id: string; corner: number; orig: BoardObject; from: Box; sel: Box }
 		| { type: 'erase'; erased: Set<string> };
 
 	const pointers = new Map<number, Point>();
@@ -173,6 +200,35 @@
 	}, 50);
 
 	const sendMove = throttle((id: string, x: number, y: number) => onop({ kind: 'update', id, patch: { x, y } }), 50);
+	const sendResize = throttle((id: string, patch: Patch) => onop({ kind: 'update', id, patch }), 80);
+
+	/** Resize handles show on the selection while the select tool is on. */
+	let showHandles = $derived(tool === 'select' && editable && !readonly && !!selected);
+
+	/** Index of the selection's corner handle at screen point p, or -1. */
+	function cornerAt(p: Point, touch = false): number {
+		if (!showHandles) return -1;
+		const o = objects.find((x) => x.id === selected);
+		if (!o) return -1;
+		const reach = (touch ? 16 : HANDLE) / view.scale;
+		const w = toWorld(view, p);
+		return corners(selectionBox(o, view.scale)).findIndex((c) => Math.abs(c.x - w.x) <= reach && Math.abs(c.y - w.y) <= reach);
+	}
+
+	/** Applies a color or width pick to the selected object as well. */
+	function restyle(patch: Patch) {
+		if (!selected || !editable || tool !== 'select') return;
+		const o = objects.find((x) => x.id === selected);
+		if (!o) return;
+		if (patch.strokeWidth !== undefined && (o.kind === 'text' || o.kind === 'sticky')) return;
+		if (patch.color !== undefined && o.kind === 'sticky') return;
+		onop({ kind: 'update', id: o.id, patch });
+	}
+
+	function pickColor(c: string) {
+		color = c;
+		restyle({ color: c });
+	}
 
 	function pinchState(): { dist: number; mid: Point } {
 		const [a, b] = [...pointers.values()];
@@ -181,6 +237,7 @@
 
 	function onpointerdown(e: PointerEvent) {
 		if (editor) commitText();
+		paletteOpen = false;
 		canvas.setPointerCapture(e.pointerId);
 		const p = local(e);
 		pointers.set(e.pointerId, p);
@@ -234,6 +291,19 @@
 				erase(w);
 				break;
 			case 'select': {
+				const corner = cornerAt(p, e.pointerType === 'touch');
+				const target = corner >= 0 ? objects.find((x) => x.id === selected) : undefined;
+				if (target) {
+					gesture = {
+						type: 'resize',
+						id: target.id,
+						corner,
+						orig: target,
+						from: bounds(target),
+						sel: selectionBox(target, view.scale)
+					};
+					break;
+				}
 				const hit = topmostAt(objects, w, tolerance());
 				if (hit) {
 					selected = hit.id;
@@ -251,7 +321,10 @@
 		const p = local(e);
 		if (pointers.has(e.pointerId)) pointers.set(e.pointerId, p);
 		if (gesture?.type !== 'pinch') oncursor(toWorld(view, p));
-		if (!gesture) return;
+		if (!gesture) {
+			if (e.pointerType === 'mouse') hoverCorner = cornerAt(p);
+			return;
+		}
 
 		switch (gesture.type) {
 			case 'pan':
@@ -290,8 +363,27 @@
 				const dy = w.y - gesture.start.y;
 				// The local drag is drawn every frame; the room gets a
 				// throttled stream of positions.
-				moving = { id: gesture.id, x: gesture.orig.x + dx, y: gesture.orig.y + dy };
-				sendMove.call(gesture.id, moving.x, moving.y);
+				const x = gesture.orig.x + dx;
+				const y = gesture.orig.y + dy;
+				moving = { id: gesture.id, x, y };
+				sendMove.call(gesture.id, x, y);
+				break;
+			}
+			case 'resize': {
+				// Drag the padded outline the user sees, then take the
+				// padding back off to get the object's new bounds.
+				const g = gesture;
+				const pad = (g.sel.w - g.from.w) / 2;
+				const sel = dragCorner(g.sel, g.corner, toWorld(view, p), keepsAspect(g.orig));
+				const to = {
+					x: sel.x + pad,
+					y: sel.y + pad,
+					w: Math.max(MIN_SIZE / 2, sel.w - 2 * pad),
+					h: Math.max(MIN_SIZE / 2, sel.h - 2 * pad)
+				};
+				const patch = resizePatch(g.orig, g.from, to);
+				moving = { id: g.id, ...patch };
+				sendResize.call(g.id, patch);
 				break;
 			}
 			case 'erase':
@@ -337,6 +429,10 @@
 				sendMove.flush();
 				moving = null;
 				break;
+			case 'resize':
+				sendResize.flush();
+				moving = null;
+				break;
 		}
 	}
 
@@ -362,8 +458,8 @@
 
 	function openEditor(existing: BoardObject | null, at?: Point) {
 		editor = existing
-			? { id: existing.id, x: existing.x, y: existing.y, text: existing.text ?? '' }
-			: { id: null, x: at!.x, y: at!.y - (TEXT_SIZE * TEXT_LINE) / 2, text: '' };
+			? { id: existing.id, x: existing.x, y: existing.y, text: existing.text ?? '', size: textSize(existing) }
+			: { id: null, x: at!.x, y: at!.y - (TEXT_SIZE * TEXT_LINE) / 2, text: '', size: TEXT_SIZE };
 		tick().then(() => textarea?.focus());
 	}
 
@@ -383,7 +479,7 @@
 			onop({ kind: 'delete', id: ed.id });
 			return;
 		}
-		const { w, h } = measureText(ctx, text);
+		const { w, h } = measureText(ctx, text, ed.size);
 		onop({ kind: 'update', id: ed.id, patch: { text, w, h } });
 	}
 
@@ -428,6 +524,7 @@
 		}
 		if (e.key === 'Escape') {
 			selected = '';
+			paletteOpen = false;
 			return;
 		}
 		const t = TOOLS.find((x) => x.key === e.key.toLowerCase());
@@ -448,7 +545,17 @@
 	}
 
 	let cursorStyle = $derived(
-		spaceHeld || tool === 'hand' ? 'grab' : tool === 'select' ? 'default' : tool === 'text' ? 'text' : 'crosshair'
+		spaceHeld || tool === 'hand'
+			? 'grab'
+			: tool === 'select'
+				? hoverCorner === 0 || hoverCorner === 2
+					? 'nwse-resize'
+					: hoverCorner === 1 || hoverCorner === 3
+						? 'nesw-resize'
+						: 'default'
+				: tool === 'text'
+					? 'text'
+					: 'crosshair'
 	);
 	let editorScreen = $derived(editor ? toScreen(view, editor) : null);
 </script>
@@ -490,7 +597,7 @@
 			placeholder="Type…"
 			style:left="{editorScreen.x}px"
 			style:top="{editorScreen.y}px"
-			style:font="{TEXT_SIZE * view.scale}px/{TEXT_LINE} {FONT}"
+			style:font="{editor.size * view.scale}px/{TEXT_LINE} {FONT}"
 			style:color
 			onkeydown={oneditorkey}
 			onblur={commitText}
@@ -522,9 +629,19 @@
 				aria-label="Color {c}"
 				aria-pressed={color === c}
 				style:--c={c}
-				onclick={() => (color = c)}
+				onclick={() => pickColor(c)}
 			></button>
 		{/each}
+		<button
+			type="button"
+			class="swatch more"
+			class:active={!COLORS.includes(color)}
+			aria-label="More colors"
+			aria-expanded={paletteOpen}
+			title="More colors"
+			style:--c={COLORS.includes(color) ? 'conic-gradient(#ef4444, #eab308, #22c55e, #06b6d4, #6366f1, #d946ef, #ef4444)' : color}
+			onclick={() => (paletteOpen = !paletteOpen)}
+		></button>
 		<span class="sep"></span>
 		{#each WIDTHS as w (w)}
 			<button
@@ -532,12 +649,31 @@
 				class:active={width === w}
 				aria-label="Width {w}"
 				aria-pressed={width === w}
-				onclick={() => (width = w)}
+				onclick={() => ((width = w), restyle({ strokeWidth: w }))}
 			>
 				<span class="dot" style:width="{w + 2}px" style:height="{w + 2}px"></span>
 			</button>
 		{/each}
 	</div>
+	{#if paletteOpen}
+		<div class="palette" role="dialog" aria-label="Colors">
+			{#each MORE_COLORS as c (c)}
+				<button
+					type="button"
+					class="swatch"
+					class:active={color === c}
+					aria-label="Color {c}"
+					aria-pressed={color === c}
+					style:--c={c}
+					onclick={() => (pickColor(c), (paletteOpen = false))}
+				></button>
+			{/each}
+			<label class="custom" title="Any color">
+				<input type="color" value={color} aria-label="Custom color" onchange={(e) => pickColor(e.currentTarget.value)} />
+				<span>Custom…</span>
+			</label>
+		</div>
+	{/if}
 	{/if}
 
 	<div class="zoom">
@@ -680,6 +816,51 @@
 		display: block;
 		border-radius: 50%;
 		background: currentColor;
+	}
+	.swatch.more::after {
+		background: var(--c);
+	}
+	.palette {
+		position: absolute;
+		top: 64px;
+		left: 50%;
+		z-index: 3;
+		display: grid;
+		grid-template-columns: repeat(8, 34px);
+		gap: 2px;
+		padding: 8px;
+		transform: translateX(-50%);
+		background: white;
+		border: 1px solid #e4e4e7;
+		border-radius: 14px;
+		box-shadow: 0 12px 32px rgba(15, 23, 42, 0.14);
+	}
+	.palette .swatch::after {
+		border: 1px solid rgba(15, 23, 42, 0.12);
+		box-sizing: border-box;
+	}
+	.custom {
+		grid-column: 1 / -1;
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-top: 4px;
+		padding: 4px 6px;
+		border-radius: 9px;
+		font: 500 13px Inter, system-ui, sans-serif;
+		color: #3f3f46;
+		cursor: pointer;
+	}
+	.custom:hover {
+		background: #f4f4f5;
+	}
+	.custom input {
+		width: 26px;
+		height: 26px;
+		padding: 0;
+		border: 0;
+		background: none;
+		cursor: pointer;
 	}
 	.sep {
 		flex: none;

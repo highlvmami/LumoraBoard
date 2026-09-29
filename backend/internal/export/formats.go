@@ -13,6 +13,7 @@ import (
 	"github.com/fogleman/gg"
 	"github.com/go-pdf/fpdf"
 	"github.com/golang/freetype/truetype"
+	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/goregular"
 
 	"github.com/highlvmami/lumoraboard/backend/internal/board"
@@ -83,6 +84,8 @@ type pngSurface struct {
 	dc     *gg.Context
 	origin box
 	scale  float64
+	font   *truetype.Font
+	faces  map[float64]font.Face
 }
 
 func renderPNG(ctx context.Context, objs []board.Object, scale float64, progress func(done, total int)) ([]byte, error) {
@@ -97,9 +100,8 @@ func renderPNG(ctx context.Context, objs []board.Object, scale float64, progress
 	if err != nil {
 		return nil, err
 	}
-	dc.SetFontFace(truetype.NewFace(f, &truetype.Options{Size: textSize * scale}))
-
-	if err := paint(ctx, &pngSurface{dc: dc, origin: a, scale: scale}, objs, progress); err != nil {
+	s := &pngSurface{dc: dc, origin: a, scale: scale, font: f, faces: map[float64]font.Face{}}
+	if err := paint(ctx, s, objs, progress); err != nil {
 		return nil, err
 	}
 	var buf bytes.Buffer
@@ -183,10 +185,17 @@ func (s *pngSurface) fillPolygon(pts []board.Point, c rgb) {
 	s.dc.Fill()
 }
 
-func (s *pngSurface) text(lines []string, x, y float64, c rgb) {
+func (s *pngSurface) text(lines []string, x, y, size float64, c rgb) {
 	s.set(c, 0)
+	// Faces are cached per size: a board usually has only a few.
+	face, ok := s.faces[size]
+	if !ok {
+		face = truetype.NewFace(s.font, &truetype.Options{Size: size * s.scale})
+		s.faces[size] = face
+	}
+	s.dc.SetFontFace(face)
 	for i, line := range lines {
-		px, py := s.px(x, y+float64(i)*textSize*textLine)
+		px, py := s.px(x, y+float64(i)*size*textLine)
 		// ay=1 puts the top of the line at py, like textBaseline 'top'.
 		s.dc.DrawStringAnchored(line, px, py, 0, 1)
 	}
@@ -284,11 +293,12 @@ func (s *pdfSurface) fillPolygon(pts []board.Point, c rgb) {
 	s.pdf.Polygon(s.points(pts), "F")
 }
 
-func (s *pdfSurface) text(lines []string, x, y float64, c rgb) {
+func (s *pdfSurface) text(lines []string, x, y, size float64, c rgb) {
 	s.set(c, 0)
+	s.pdf.SetFontSize(size * s.scale)
 	for i, line := range lines {
-		px, py := s.pt(x, y+float64(i)*textSize*textLine)
+		px, py := s.pt(x, y+float64(i)*size*textLine)
 		// Text takes a baseline; the ascent of Go Regular is about 0.9 em.
-		s.pdf.Text(px, py+0.9*textSize*s.scale, line)
+		s.pdf.Text(px, py+0.9*size*s.scale, line)
 	}
 }

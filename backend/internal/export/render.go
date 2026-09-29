@@ -103,7 +103,7 @@ type surface interface {
 	ellipse(b box, c rgb, w float64)
 	fillPolygon(pts []board.Point, c rgb)
 	// text draws lines with their top-left corner at x, y.
-	text(lines []string, x, y float64, c rgb)
+	text(lines []string, x, y, size float64, c rgb)
 }
 
 // paint draws objs in order (they come sorted by z), reporting progress
@@ -152,12 +152,23 @@ func drawObject(s surface, o board.Object) {
 			{X: bx - head*math.Cos(angle+math.Pi/7), Y: by - head*math.Sin(angle+math.Pi/7)},
 		}, c)
 	case board.KindText:
-		s.text(strings.Split(o.Text, "\n"), o.X, o.Y, c)
+		s.text(strings.Split(o.Text, "\n"), o.X, o.Y, fontSize(o), c)
 	case board.KindSticky:
 		b := objectBounds(o)
 		s.fillRect(b, parseColor(stickyFill))
-		s.text(strings.Split(o.Text, "\n"), o.X+stickyPad, o.Y+stickyPad, parseColor(defaultColor))
+		s.text(strings.Split(o.Text, "\n"), o.X+stickyPad, o.Y+stickyPad, textSize, parseColor(defaultColor))
 	}
+}
+
+// fontSize matches geometry.ts textSize(): a text object's size follows
+// its box height, so resizing the box scales the text. Text that was never
+// resized has h = lines*textSize*textLine and comes out at textSize.
+func fontSize(o board.Object) float64 {
+	lines := float64(strings.Count(o.Text, "\n") + 1)
+	if o.H <= 0 {
+		return textSize
+	}
+	return o.H / (lines * textLine)
 }
 
 func orString(v, d string) string {
