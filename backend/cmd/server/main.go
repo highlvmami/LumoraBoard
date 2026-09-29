@@ -3,8 +3,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -15,6 +17,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/highlvmami/lumoraboard/backend/internal/auth"
+	"github.com/highlvmami/lumoraboard/backend/internal/cluster"
 	"github.com/highlvmami/lumoraboard/backend/internal/export"
 	"github.com/highlvmami/lumoraboard/backend/internal/room"
 	"github.com/highlvmami/lumoraboard/backend/internal/server"
@@ -43,6 +46,7 @@ func run() error {
 
 	roomCfg := room.DefaultConfig()
 	var authStore auth.Store = auth.NewMemory()
+	var leases store.Leases // set with a database; clustering needs one
 	if url := os.Getenv("LUMORA_DATABASE_URL"); url != "" {
 		connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
@@ -60,7 +64,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		roomCfg.Store, authStore = boards, accounts
+		roomCfg.Store, authStore, leases = boards, accounts, boards
 		log.Info("persistence enabled", "store", "postgres")
 	} else {
 		// Kept in process memory so idle boards survive until restart.
@@ -76,8 +80,19 @@ func run() error {
 		log.Warn("no sign-in provider configured; everyone can edit every board")
 	}
 
+	node, err := clusterNode(leases, addr, log)
+	if err != nil {
+		return err
+	}
+	if node != nil {
+		roomCfg.Owner = node
+	}
 	hub := room.NewHub(roomCfg, log)
 	wsHandler := ws.NewHandler(hub, wsCfg, log)
+	if node != nil {
+		node.Attach(hub)
+		wsHandler.WithCluster(node, []byte(os.Getenv("LUMORA_CLUSTER_SECRET")))
+	}
 	var boardAuth ws.Authorizer // nil in open mode
 	if authSvc.Enabled() {
 		boardAuth = authSvc
@@ -94,7 +109,46 @@ func run() error {
 	g.Go(func() error { return hub.Run(gctx) })
 	g.Go(func() error { return exports.Run(gctx) })
 	g.Go(func() error { return srv.Run(gctx) })
-	return g.Wait()
+	if node != nil {
+		g.Go(func() error { return node.Run(gctx) })
+	}
+	err = g.Wait()
+	if node != nil {
+		// Every room has flushed; hand the boards over now rather than
+		// making the other instances wait for the leases to expire.
+		node.Release()
+	}
+	return err
+}
+
+// clusterNode joins a cluster when LUMORA_CLUSTER_SECRET is set. Every
+// instance needs the same secret and database, and an address the others
+// can reach it on (LUMORA_ADVERTISE_URL, default http://<listen addr>).
+func clusterNode(leases store.Leases, addr string, log *slog.Logger) (*cluster.Node, error) {
+	secret := os.Getenv("LUMORA_CLUSTER_SECRET")
+	if secret == "" {
+		return nil, nil
+	}
+	if leases == nil {
+		return nil, errors.New("LUMORA_CLUSTER_SECRET needs LUMORA_DATABASE_URL: instances share boards through the database")
+	}
+	if len(secret) < 16 {
+		return nil, errors.New("LUMORA_CLUSTER_SECRET must be at least 16 characters")
+	}
+	advertise := os.Getenv("LUMORA_ADVERTISE_URL")
+	if advertise == "" {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("LUMORA_ADDR %q: %w", addr, err)
+		}
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		advertise = "http://" + net.JoinHostPort(host, port)
+	}
+	node := cluster.New(cluster.Config{Instance: os.Getenv("LUMORA_INSTANCE"), Addr: advertise}, leases, log)
+	log.Info("cluster mode", "instance", node.Instance(), "advertise", advertise)
+	return node, nil
 }
 
 // authConfig reads sign-in settings. A provider is enabled when both its

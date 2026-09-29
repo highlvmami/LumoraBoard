@@ -73,6 +73,7 @@ func (Nop) ChatBefore(context.Context, string, uint64, int) ([]proto.ChatMessage
 type Memory struct {
 	mu     sync.Mutex
 	boards map[string]*memBoard
+	leases map[string]*memLease
 }
 
 type memBoard struct {
@@ -82,7 +83,9 @@ type memBoard struct {
 }
 
 // NewMemory creates an empty in-memory store.
-func NewMemory() *Memory { return &Memory{boards: make(map[string]*memBoard)} }
+func NewMemory() *Memory {
+	return &Memory{boards: make(map[string]*memBoard), leases: make(map[string]*memLease)}
+}
 
 func (m *Memory) board(name string) *memBoard {
 	b, ok := m.boards[name]
@@ -121,9 +124,12 @@ func (m *Memory) Load(_ context.Context, name string) (Loaded, error) {
 }
 
 // Append implements Store.
-func (m *Memory) Append(_ context.Context, name string, recs []Record) error {
+func (m *Memory) Append(ctx context.Context, name string, recs []Record) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := m.checkFence(ctx, name); err != nil {
+		return err
+	}
 	b := m.board(name)
 	for _, r := range recs {
 		if _, dup := b.ops[r.Seq]; !dup {
@@ -135,9 +141,12 @@ func (m *Memory) Append(_ context.Context, name string, recs []Record) error {
 }
 
 // Compact implements Store.
-func (m *Memory) Compact(_ context.Context, name string, snap Snapshot) error {
+func (m *Memory) Compact(ctx context.Context, name string, snap Snapshot) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := m.checkFence(ctx, name); err != nil {
+		return err
+	}
 	b := m.board(name)
 	if snap.Seq < b.snap.Seq {
 		return nil
@@ -152,9 +161,12 @@ func (m *Memory) Compact(_ context.Context, name string, snap Snapshot) error {
 }
 
 // AppendChat implements Store.
-func (m *Memory) AppendChat(_ context.Context, name string, msgs []proto.ChatMessage) error {
+func (m *Memory) AppendChat(ctx context.Context, name string, msgs []proto.ChatMessage) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := m.checkFence(ctx, name); err != nil {
+		return err
+	}
 	b := m.board(name)
 	for _, msg := range msgs {
 		i, found := slices.BinarySearchFunc(b.chat, msg.ID, func(c proto.ChatMessage, id uint64) int { return cmp.Compare(c.ID, id) })

@@ -88,10 +88,15 @@ func (p *Postgres) AppendChat(ctx context.Context, name string, msgs []proto.Cha
 			ON CONFLICT (board, id) DO NOTHING`,
 			name, int64(m.ID), m.From, m.User, m.Name, m.Avatar, m.Text, m.Ref, m.At)
 	}
-	if err := p.pool.SendBatch(ctx, batch).Close(); err != nil {
-		return fmt.Errorf("store: append chat %q: %w", name, err)
-	}
-	return nil
+	return pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
+		if err := checkFence(ctx, tx, name); err != nil {
+			return err
+		}
+		if err := tx.SendBatch(ctx, batch).Close(); err != nil {
+			return fmt.Errorf("store: append chat %q: %w", name, err)
+		}
+		return nil
+	})
 }
 
 // ChatBefore implements Store.
@@ -139,6 +144,9 @@ func (p *Postgres) Append(ctx context.Context, name string, recs []Record) error
 		ops[i] = string(r.Op)
 	}
 	return pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
+		if err := checkFence(ctx, tx, name); err != nil {
+			return err
+		}
 		if err := touchBoard(ctx, tx, name); err != nil {
 			return err
 		}
@@ -166,6 +174,9 @@ func (p *Postgres) Compact(ctx context.Context, name string, snap Snapshot) erro
 		return fmt.Errorf("store: encode snapshot: %w", err)
 	}
 	return pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
+		if err := checkFence(ctx, tx, name); err != nil {
+			return err
+		}
 		if err := touchBoard(ctx, tx, name); err != nil {
 			return err
 		}
