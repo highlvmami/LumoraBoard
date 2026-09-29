@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,6 +57,52 @@ func newToken() (token string, hash []byte) {
 	}
 	token = hex.EncodeToString(b[:])
 	return token, hashToken(token)
+}
+
+// inviteAlphabet leaves out look-alikes (0/O, 1/I/L) so a code read
+// aloud or typed from a screenshot comes out right.
+const inviteAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
+// newInviteCode returns a short code people can type, such as
+// "K7QM-2XRA", and its hash. Eight symbols from 31 give about 40 bits;
+// with invites expiring after days, guessing one is not practical.
+func newInviteCode() (code string, hash []byte) {
+	// Bytes past the last whole multiple of the alphabet are redrawn so
+	// every symbol is equally likely.
+	limit := byte(256 / len(inviteAlphabet) * len(inviteAlphabet))
+	out := make([]byte, 0, 9)
+	var buf [16]byte
+	for len(out) < 9 {
+		if _, err := rand.Read(buf[:]); err != nil {
+			panic("auth: crypto/rand failed: " + err.Error())
+		}
+		for _, v := range buf {
+			if len(out) == 9 {
+				break
+			}
+			if v >= limit {
+				continue
+			}
+			if len(out) == 4 {
+				out = append(out, '-')
+			}
+			out = append(out, inviteAlphabet[int(v)%len(inviteAlphabet)])
+		}
+	}
+	code = string(out)
+	return code, hashToken(normalizeInviteCode(code))
+}
+
+// normalizeInviteCode makes a typed code match the one issued: case,
+// dashes and spaces do not matter.
+func normalizeInviteCode(code string) string {
+	code = strings.ToUpper(code)
+	return strings.Map(func(r rune) rune {
+		if r == '-' || r == ' ' {
+			return -1
+		}
+		return r
+	}, code)
 }
 
 func hashToken(token string) []byte {

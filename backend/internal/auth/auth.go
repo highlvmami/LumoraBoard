@@ -380,14 +380,14 @@ func (s *Service) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "only the board owner can invite", http.StatusForbidden)
 		return
 	}
-	token, hash := newToken()
+	code, hash := newInviteCode()
 	expires := s.cfg.Now().Add(s.cfg.InviteTTL)
 	if err := s.store.CreateInvite(r.Context(), hash, board, body.Role, u.ID, expires); err != nil {
 		s.fail(w, err)
 		return
 	}
-	link := s.cfg.PublicURL + "/?room=" + url.QueryEscape(board) + "&invite=" + token
-	writeJSON(w, http.StatusCreated, map[string]any{"token": token, "url": link, "role": body.Role, "expires": expires})
+	link := s.cfg.PublicURL + "/?room=" + url.QueryEscape(board) + "&invite=" + code
+	writeJSON(w, http.StatusCreated, map[string]any{"token": code, "code": code, "url": link, "role": body.Role, "expires": expires})
 }
 
 func (s *Service) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
@@ -396,7 +396,7 @@ func (s *Service) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	board, role, err := s.store.AcceptInvite(r.Context(), hashToken(r.PathValue("token")), u.ID, s.cfg.Now())
+	board, role, err := s.store.AcceptInvite(r.Context(), hashToken(normalizeInviteCode(r.PathValue("token"))), u.ID, s.cfg.Now())
 	if errors.Is(err, ErrNotFound) {
 		http.Error(w, "this invite link is invalid or has expired", http.StatusNotFound)
 		return

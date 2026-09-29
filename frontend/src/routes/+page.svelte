@@ -1,12 +1,23 @@
 <script lang="ts">
-	import { onDestroy, onMount, tick } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { replaceState } from '$app/navigation';
 	import { checkHealth, type BackendStatus } from '$lib/health';
 	import { BoardStore, canEdit, sorted, type BoardObject, type Op, type Point, type Role } from '$lib/board';
 	import { colorFor, displayName, Presence, throttle } from '$lib/presence';
 	import { CLOSE_FORBIDDEN, CLOSE_UNAUTHORIZED, connectRoom, type ConnectionState, type RoomConnection } from '$lib/ws';
-	import { acceptInvite, checkAccess, createInvite, fetchAuthStatus, loginUrl, logout, type AuthStatus } from '$lib/auth';
+	import {
+		acceptInvite,
+		checkAccess,
+		createInvite,
+		devLogin,
+		fetchAuthStatus,
+		loginUrl,
+		logout,
+		parseJoinInput,
+		type AuthStatus,
+		type Invite
+	} from '$lib/auth';
 	import Whiteboard, { type RemoteCursor } from '$lib/Whiteboard.svelte';
 	import Chat from '$lib/Chat.svelte';
 	import { ChatStore, fetchOlder, typingLabel } from '$lib/chat';
@@ -24,12 +35,21 @@
 	} from '$lib/export';
 
 	const NAME_KEY = 'lumora.name';
-	const ROOM_KEY = 'lumora.room';
 	const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 	let health = $state<BackendStatus>('checking');
 	let room = $state('');
-	let roomInput = $state('');
+	/**
+	 * What the page shows: nothing yet, the name step, the join-or-create
+	 * menu, or a board.
+	 */
+	let screen = $state<'loading' | 'name' | 'menu' | 'board'>('loading');
+	let menuStep = $state<'choose' | 'join'>('choose');
+	let joinText = $state('');
+	let formError = $state('');
+	let busy = $state(false);
+	/** Invites the owner made in this visit, shown in the share menu. */
+	let invites = $state<Partial<Record<'editor' | 'viewer', Invite>>>({});
 	let name = $state('');
 	let socket = $state<ConnectionState>('closed');
 	let detail = $state('');
@@ -37,7 +57,7 @@
 	/** Null until the server said how sign-in works. */
 	let auth = $state<AuthStatus | null>(null);
 	/** Why the board is not shown, if it is not. */
-	let gate = $state<'' | 'signin' | 'forbidden'>('');
+	let gate = $state<'' | 'forbidden'>('');
 	let shareOpen = $state(false);
 	let chatOpen = $state(false);
 	let exportOpen = $state(false);
@@ -234,11 +254,7 @@
 		if (!file) return;
 		try {
 			const res = await importBackup(file);
-			room = roomInput = res.board;
-			const url = new URL(page.url);
-			url.searchParams.set('room', room);
-			replaceState(url, page.state);
-			connect();
+			openRoom(res.board);
 			flash(`Imported ${res.objects} objects into a new board.`);
 		} catch (err) {
 			flash(err instanceof Error ? err.message : String(err));
@@ -268,66 +284,141 @@
 		} catch {
 			// Storage can be unavailable (private mode); a guest name is fine.
 		}
-		// A link names its board; otherwise come back to the last board,
-		// or start a fresh one the visitor will own. The name goes into the
-		// URL so signing in returns here and the link can be shared.
-		const fromUrl = page.url.searchParams.get('room');
-		let last = '';
-		try {
-			last = localStorage.getItem(ROOM_KEY) ?? '';
-		} catch {
-			// See above.
-		}
-		room = roomInput =
-			fromUrl && ROOM_RE.test(fromUrl) ? fromUrl : ROOM_RE.test(last) ? last : randomBoardName();
 		checkHealth().then((h) => (health = h));
-		// The router is not ready for replaceState until mount finishes.
-		await tick();
-		if (fromUrl !== room) {
-			const url = new URL(page.url);
-			url.searchParams.set('room', room);
-			replaceState(url, page.state);
-		}
-
 		try {
 			auth = await fetchAuthStatus();
 		} catch {
 			// An old or unreachable backend: behave as before sign-in existed.
 			auth = { enabled: false, guests: false, providers: [] };
 		}
-		if (auth.enabled && !auth.user) {
-			// Guests may watch; everyone else signs in first. An invite in
-			// the URL survives the round trip through the provider.
-			if (!auth.guests) {
-				gate = 'signin';
-				return;
-			}
-		}
-		const joined = await redeemInvite();
-		connect();
-		if (joined) flash(joined);
+		await route();
 	});
 
+	/** Whether the visitor has told us who they are. */
+	let named = $derived(auth ? (auth.enabled ? !!auth.user : !!name.trim()) : false);
+	let hasDevLogin = $derived(!!auth?.providers.some((p) => p.id === 'dev'));
+	/** Sign-in buttons other than the name form. */
+	let otherProviders = $derived(auth?.providers.filter((p) => p.id !== 'dev') ?? []);
+
 	/**
-	 * Accepts ?invite=… once the user is signed in, then drops it from the
-	 * URL. Returns a message for the user, if any.
+	 * Picks the screen from the URL: a name first, then an invite or a
+	 * board the link points at, else the join-or-create menu.
 	 */
-	async function redeemInvite(): Promise<string> {
-		const token = page.url.searchParams.get('invite');
-		if (!token || !auth?.user) return '';
-		let msg: string;
-		try {
-			const res = await acceptInvite(token);
-			room = roomInput = res.board;
-			msg = `You joined ${res.board} as ${res.role}.`;
-		} catch (e) {
-			msg = e instanceof Error ? e.message : String(e);
+	async function route() {
+		const invite = page.url.searchParams.get('invite');
+		const fromUrl = page.url.searchParams.get('room') ?? '';
+		if (!named) {
+			// Guests may watch a board they have a link to without a name.
+			if (auth?.guests && fromUrl && !invite) {
+				openRoom(fromUrl);
+				return;
+			}
+			screen = 'name';
+			return;
 		}
+		if (invite && auth?.enabled) {
+			await redeem(invite);
+			return;
+		}
+		if (ROOM_RE.test(fromUrl)) {
+			openRoom(fromUrl);
+			return;
+		}
+		screen = 'menu';
+	}
+
+	async function submitName(e: SubmitEvent) {
+		e.preventDefault();
+		const n = name.trim();
+		if (!n || busy) return;
+		busy = true;
+		formError = '';
+		try {
+			localStorage.setItem(NAME_KEY, n);
+		} catch {
+			// See onMount.
+		}
+		try {
+			if (auth?.enabled) {
+				await devLogin(n);
+				auth = await fetchAuthStatus();
+			}
+			await route();
+		} catch (err) {
+			formError = err instanceof Error ? err.message : String(err);
+		} finally {
+			busy = false;
+		}
+	}
+
+	/** Accepts an invite and opens its board with the role it grants. */
+	async function redeem(code: string) {
+		try {
+			const res = await acceptInvite(code.trim());
+			openRoom(res.board);
+			flash(`You joined as ${res.role === 'viewer' ? 'a viewer' : res.role === 'owner' ? 'the owner' : 'an editor'}.`);
+		} catch (err) {
+			screen = 'menu';
+			menuStep = 'join';
+			formError = err instanceof Error ? err.message : String(err);
+			setUrl('');
+		}
+	}
+
+	async function submitJoin(e: SubmitEvent) {
+		e.preventDefault();
+		if (busy) return;
+		const parsed = parseJoinInput(joinText);
+		if (!parsed) {
+			formError = 'Paste an invite link or type the invite code.';
+			return;
+		}
+		formError = '';
+		busy = true;
+		try {
+			if (parsed.invite && auth?.enabled) await redeem(parsed.invite);
+			else if (parsed.room) openRoom(parsed.room);
+			else formError = 'That code needs sign-in, which this server does not have.';
+		} finally {
+			busy = false;
+		}
+	}
+
+	function createRoom() {
+		openRoom(randomBoardName());
+	}
+
+	function setUrl(board: string) {
 		const url = new URL(page.url);
-		url.searchParams.delete('invite');
-		url.searchParams.set('room', room);
+		url.search = board ? `?room=${encodeURIComponent(board)}` : '';
 		replaceState(url, page.state);
-		return msg;
+	}
+
+	function openRoom(board: string) {
+		if (!ROOM_RE.test(board)) {
+			screen = 'menu';
+			return;
+		}
+		room = board;
+		invites = {};
+		screen = 'board';
+		setUrl(board);
+		connect();
+	}
+
+	/** Back to the join-or-create menu. */
+	function home() {
+		conn?.close();
+		conn = null;
+		socket = 'closed';
+		room = '';
+		gate = '';
+		joinText = '';
+		formError = '';
+		menuStep = 'choose';
+		shareOpen = chatOpen = exportOpen = false;
+		setUrl('');
+		screen = named ? 'menu' : 'name';
 	}
 
 	onDestroy(() => {
@@ -348,17 +439,12 @@
 		const access = await checkAccess(target);
 		if (room !== target || conn) return; // another connect() took over
 		if (access === 'signin') {
-			gate = 'signin';
+			screen = 'name';
 			return;
 		}
 		if (access === 'forbidden') {
 			gate = 'forbidden';
 			return;
-		}
-		try {
-			localStorage.setItem(ROOM_KEY, target);
-		} catch {
-			// Only a convenience.
 		}
 		store = newStore();
 		presence = new Presence();
@@ -400,7 +486,7 @@
 				onState: (s, d, code) => {
 					socket = s;
 					detail = d ?? '';
-					if (code === CLOSE_UNAUTHORIZED) gate = 'signin';
+					if (code === CLOSE_UNAUTHORIZED) screen = 'name';
 					else if (code === CLOSE_FORBIDDEN) gate = 'forbidden';
 				}
 			},
@@ -408,33 +494,9 @@
 		);
 	}
 
-	function join(e: SubmitEvent) {
-		e.preventDefault();
-		if (!ROOM_RE.test(roomInput)) return;
-		room = roomInput;
-		try {
-			localStorage.setItem(NAME_KEY, name.trim());
-		} catch {
-			// See onMount.
-		}
-		const url = new URL(page.url);
-		url.searchParams.set('room', room);
-		replaceState(url, page.state);
-		connect();
-	}
-
 	function randomBoardName(): string {
 		const bytes = crypto.getRandomValues(new Uint8Array(4));
 		return 'board-' + Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-	}
-
-	/** Opens a fresh board under a random name; the opener owns it. */
-	function newBoard() {
-		room = roomInput = randomBoardName();
-		const url = new URL(page.url);
-		url.searchParams.set('room', room);
-		replaceState(url, page.state);
-		connect();
 	}
 
 	function send(op: Op) {
@@ -460,18 +522,25 @@
 		);
 	}
 
+	/** Makes an invite for the role, once per visit, and copies its link. */
 	async function invite(r: 'editor' | 'viewer') {
-		shareOpen = false;
 		try {
-			copy(await createInvite(room, r), r === 'editor' ? 'Edit link' : 'View link');
+			const inv = invites[r] ?? (await createInvite(room, r));
+			invites[r] = inv;
+			copy(inv.url, r === 'editor' ? 'Edit link' : 'View link');
 		} catch (e) {
 			flash(e instanceof Error ? e.message : String(e));
 		}
 	}
 
 	async function signOut() {
-		await logout();
-		location.reload();
+		if (auth?.enabled) await logout();
+		try {
+			localStorage.removeItem(NAME_KEY);
+		} catch {
+			// See onMount.
+		}
+		location.href = '/';
 	}
 
 	// Where sign-in comes back to: this page, on the current board.
@@ -483,21 +552,18 @@
 </script>
 
 <svelte:head>
-	<title>{room} · LumoraBoard</title>
+	<title>{room ? `${room} · LumoraBoard` : 'LumoraBoard'}</title>
 </svelte:head>
 
 <div class="app">
 	<header>
 		<strong class="logo">LumoraBoard</strong>
-		<form onsubmit={join}>
-			<input bind:value={roomInput} pattern={'[A-Za-z0-9_\\-]{1,64}'} required aria-label="Room" placeholder="room" />
-			{#if !auth?.enabled}
-				<input bind:value={name} maxlength="32" aria-label="Your name" placeholder="your name" />
-			{/if}
-			<button type="submit">Join</button>
-		</form>
+		{#if screen === 'board'}
+			<button type="button" class="quiet" onclick={home} title="Back to the menu">← Menu</button>
+			<span class="room-name" title="Board">{room}</span>
+		{/if}
 		<!-- Room controls only for people who can open this board. -->
-		{#if !gate}
+		{#if screen === 'board' && !gate}
 			<div class="people" aria-label="People in this room">
 				<span class="avatar me" style:--c={colorFor(clientId || 'me')} title="{me} (you)">
 					{#if auth?.user?.avatar}<img src={auth.user.avatar} alt="" />{:else}{me.slice(0, 1).toUpperCase()}{/if}
@@ -536,50 +602,91 @@
 			</div>
 			<div class="share-wrap">
 				{#if auth?.enabled && role === 'owner'}
-					<button type="button" aria-expanded={shareOpen} onclick={() => (shareOpen = !shareOpen)}>Share</button>
+					<button type="button" aria-expanded={shareOpen} onclick={() => (shareOpen = !shareOpen)}>Invite</button>
 					{#if shareOpen}
-						<div class="menu" role="menu">
-							<button type="button" role="menuitem" onclick={() => invite('editor')}>Copy edit link</button>
-							<button type="button" role="menuitem" onclick={() => invite('viewer')}>Copy view-only link</button>
+						<div class="menu invites" role="menu">
+							{#each [['editor', 'Can edit'], ['viewer', 'View only']] as const as [r, label] (r)}
+								<div class="invite-row">
+									<button type="button" role="menuitem" onclick={() => invite(r)}>Copy {label.toLowerCase()} link</button>
+									{#if invites[r]}<span class="code" title="Invite code">{invites[r]!.code}</span>{/if}
+								</div>
+							{/each}
+							<p class="hint">People open the link, or type the code under “Join a room”.</p>
 						</div>
 					{/if}
-				{:else}
+				{:else if !auth?.enabled}
 					<button type="button" onclick={() => copy(page.url.href, 'Link')}>Share</button>
 				{/if}
 			</div>
 		{/if}
-		{#if auth?.user}
-			<button type="button" class="quiet" onclick={signOut} title="Signed in as {auth.user.name}">Sign out</button>
-		{:else if auth?.enabled && auth.guests}
-			<button type="button" onclick={() => (gate = 'signin')}>Sign in to edit</button>
+		{#if named}
+			<button type="button" class="quiet" onclick={signOut} title="Signed in as {me}">Sign out</button>
+		{:else if screen === 'board' && auth?.enabled && auth.guests}
+			<button type="button" onclick={() => (screen = 'name')}>Sign in to edit</button>
 		{/if}
-		<p class="status">
-			<span class="dot" data-status={socket}></span>
-			<strong data-status={socket}>{socket}</strong>
-			{#if detail && socket !== 'open'}<span class="muted">({detail})</span>{/if}
-			<span class="muted">· backend <strong data-status={health}>{health}</strong></span>
-		</p>
+		{#if screen === 'board'}
+			<p class="status">
+				<span class="dot" data-status={socket}></span>
+				<strong data-status={socket}>{socket}</strong>
+				{#if detail && socket !== 'open'}<span class="muted">({detail})</span>{/if}
+				<span class="muted">· backend <strong data-status={health}>{health}</strong></span>
+			</p>
+		{:else}
+			<p class="status"><span class="muted">backend <strong data-status={health}>{health}</strong></span></p>
+		{/if}
 	</header>
 
 	<main>
 		<div class="stage">
-			{#if gate}
+			{#if screen === 'loading'}
+				<p class="gate muted">Loading…</p>
+			{:else if screen === 'name'}
 				<section class="gate">
-					{#if gate === 'signin' && auth}
-						<h1>Sign in to open “{room}”</h1>
-						<p>LumoraBoard boards are private to the people their owner invites.</p>
+					<h1>Welcome to LumoraBoard</h1>
+					{#if hasDevLogin || !auth?.enabled}
+						<p>What should others call you?</p>
+						<form class="stack" onsubmit={submitName}>
+							<!-- svelte-ignore a11y_autofocus -->
+							<input bind:value={name} maxlength="32" required autofocus aria-label="Your name" placeholder="Your name" />
+							<button type="submit" class="button primary" disabled={busy || !name.trim()}>Continue</button>
+						</form>
+					{/if}
+					{#if otherProviders.length}
 						<div class="providers">
-							{#each auth.providers as p (p.id)}
-								<a class="button primary" href={loginUrl(p.id, here)}>Continue with {p.name}</a>
+							{#each otherProviders as p (p.id)}
+								<a class="button" href={loginUrl(p.id, here)}>Continue with {p.name}</a>
 							{/each}
 						</div>
-					{:else}
-						<h1>No access to “{room}”</h1>
-						<p>Ask the board's owner for an invite link, or start a board of your own.</p>
-						<div class="providers">
-							<button type="button" class="button primary" onclick={newBoard}>Start a new board</button>
-						</div>
 					{/if}
+					{#if formError}<p class="error" role="alert">{formError}</p>{/if}
+				</section>
+			{:else if screen === 'menu'}
+				<section class="gate">
+					<h1>Hi {me}</h1>
+					{#if menuStep === 'choose'}
+						<p>Start a board of your own, or join one you were invited to.</p>
+						<div class="providers">
+							<button type="button" class="button primary" onclick={createRoom}>Create a room</button>
+							<button type="button" class="button" onclick={() => ((menuStep = 'join'), (formError = ''))}>Join a room</button>
+						</div>
+					{:else}
+						<p>Paste the invite link you got, or type its code.</p>
+						<form class="stack" onsubmit={submitJoin}>
+							<!-- svelte-ignore a11y_autofocus -->
+							<input bind:value={joinText} required autofocus aria-label="Invite link or code" placeholder="Link or code, e.g. K7QM-2XRA" />
+							<button type="submit" class="button primary" disabled={busy || !joinText.trim()}>Join</button>
+							<button type="button" class="quiet" onclick={() => ((menuStep = 'choose'), (formError = ''))}>Back</button>
+						</form>
+					{/if}
+					{#if formError}<p class="error" role="alert">{formError}</p>{/if}
+				</section>
+			{:else if gate}
+				<section class="gate">
+					<h1>No access to this room</h1>
+					<p>Ask the room's owner for an invite link or code.</p>
+					<div class="providers">
+						<button type="button" class="button primary" onclick={home}>Back to the menu</button>
+					</div>
 				</section>
 			{:else}
 				<Whiteboard
@@ -612,7 +719,7 @@
 			{/if}
 			{#if socket === 'reconnecting'}<p class="banner">Connection lost, reconnecting…{#if detail}<span class="muted"> ({detail})</span>{/if}</p>{/if}
 		</div>
-		{#if chatOpen && !gate}
+		{#if chatOpen && !gate && screen === 'board'}
 			<div class="chat-pane">
 				<Chat
 					messages={chatMessages}
@@ -878,6 +985,46 @@
 	}
 	.gate p {
 		color: #52525b;
+	}
+	.stack {
+		display: grid;
+		gap: 0.5rem;
+		margin-top: 1.5rem;
+	}
+	.stack input {
+		width: 100%;
+		box-sizing: border-box;
+		padding: 0.6rem 0.75rem;
+		font-size: 1rem;
+	}
+	.error {
+		color: #b91c1c !important;
+	}
+	.room-name {
+		font-family: ui-monospace, monospace;
+		font-size: 0.85rem;
+		color: #52525b;
+	}
+	.invites {
+		min-width: 20rem;
+	}
+	.invite-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.5rem;
+	}
+	.code {
+		white-space: nowrap;
+		font-family: ui-monospace, monospace;
+		font-weight: 600;
+		letter-spacing: 0.05em;
+		padding-right: 0.5rem;
+	}
+	.hint {
+		margin: 0.25rem 0.5rem 0.25rem;
+		font-size: 0.8rem;
+		color: #71717a;
 	}
 	.providers {
 		display: grid;

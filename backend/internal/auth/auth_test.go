@@ -269,6 +269,18 @@ func TestRolesAndInvites(t *testing.T) {
 	if id, _ := a.whoami(t, bob, "b1"); id.Role != proto.RoleViewer {
 		t.Fatalf("bob after invite = %+v", id)
 	}
+	// The short code works typed by hand: any case, with or without dash.
+	var inv2 struct{ Code string }
+	if code := a.post(t, alice, "/api/boards/b1/invites", `{"role":"editor"}`, &inv2); code != http.StatusCreated || len(inv2.Code) != 9 {
+		t.Fatalf("second invite = %d %+v", code, inv2)
+	}
+	typed := strings.ToLower(strings.ReplaceAll(inv2.Code, "-", ""))
+	if code := a.post(t, bob, "/api/invites/"+typed+"/accept", "", nil); code != http.StatusOK {
+		t.Fatalf("typed code %q = %d", typed, code)
+	}
+	if id, _ := a.whoami(t, bob, "b1"); id.Role != proto.RoleEditor {
+		t.Fatalf("bob after edit invite = %+v", id)
+	}
 	if code := a.post(t, bob, "/api/invites/nonsense/accept", "", nil); code != http.StatusNotFound {
 		t.Fatalf("bogus invite = %d", code)
 	}
