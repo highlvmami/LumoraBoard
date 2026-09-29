@@ -1,0 +1,36 @@
+# Fly.io config; see README "Deploying to Fly.io". Renaming the app means
+# changing the two URLs below too.
+app = "lumoraboard-demo"
+primary_region = "fra"
+kill_signal = "SIGTERM"
+kill_timeout = "15s"
+
+[build]
+
+[env]
+  LUMORA_PUBLIC_URL = "https://lumoraboard-demo.fly.dev"
+  LUMORA_ALLOWED_ORIGINS = "lumoraboard-demo.fly.dev"
+  # Instances find each other on Fly's private network.
+  LUMORA_ADVERTISE_URL = "http://[${FLY_PRIVATE_IP}]:8080"
+  LUMORA_INSTANCE = "${FLY_MACHINE_ID}"
+  # A public demo: anyone signs in with just a name. Remove once GitHub or
+  # Google sign-in is configured.
+  LUMORA_DEV_LOGIN = "1"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
