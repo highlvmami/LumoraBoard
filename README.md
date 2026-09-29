@@ -12,7 +12,7 @@ Real-time collaborative whiteboard. Go + WebSocket backend built on a room-per-g
 
 ## Development
 
-Requirements: Go 1.24+, Node 22+, Docker.
+Requirements: Go 1.25+, Node 22+, Docker.
 
 ```sh
 cd frontend && npm install && cd ..
@@ -50,3 +50,15 @@ Each board has a chat on the same socket. `chat.send` goes through the room goro
 ## Export and import
 
 PNG and SVG are drawn in the browser. High-resolution PNG (up to 4x, capped at 16M pixels), PDF and JSON backups are server jobs: `POST /api/boards/{board}/exports` puts a job on a bounded queue that a fixed pool of workers (one per core, at most four) drains. Progress goes to the requesting connection as `export.progress` messages through its room; `GET /api/exports/{id}` reports status, `GET /api/exports/{id}/file` downloads the result (kept ten minutes) and `DELETE /api/exports/{id}` cancels through the job's context. A full queue answers 503 and more than three unfinished exports per person 429, so a burst of requests waits or is turned away instead of piling up. `POST /api/boards/import` with a JSON backup validates every object like a live op and opens it as a new board owned by the importer.
+
+## Running several servers
+
+Set the same `LUMORA_CLUSTER_SECRET` (at least 16 characters) and `LUMORA_DATABASE_URL` on every instance and they share boards. Each board is owned by one instance at a time through a lease row in Postgres (`room_leases`); the owner renews its leases every couple of seconds. A client that lands on another instance is proxied to the owner over a WebSocket signed with the cluster secret, so the load balancer needs no sticky sessions. If the owner dies, its leases expire (6 s) and the next instance a client reaches takes the board over from the database; proxied clients get close code 1012 and reconnect. Every write carries the lease epoch, so an old owner that wakes up late cannot overwrite the new one. A graceful stop releases leases at once.
+
+| Variable | Meaning |
+|---|---|
+| `LUMORA_CLUSTER_SECRET` | Turns cluster mode on; signs forwarded connections. |
+| `LUMORA_ADVERTISE_URL` | How other instances reach this one. Default `http://<LUMORA_ADDR>` (127.0.0.1 if the host is empty). |
+| `LUMORA_INSTANCE` | Name in the lease table and logs. Default random. |
+
+On a crash, ops the owner accepted but had not yet flushed (normally a fraction of a second's worth) are lost, and export jobs running on it fail; clients re-sync from the database when they reconnect.

@@ -90,6 +90,9 @@ type Handler struct {
 	cfg  Config
 	log  *slog.Logger
 	auth Authorizer
+
+	cluster Cluster // nil on a single server
+	secret  []byte
 }
 
 // NewHandler builds the handler.
@@ -128,7 +131,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	id := Identity{Role: proto.RoleEditor, Name: cleanName(r.URL.Query().Get("name"))}
 	var authErr error
-	if h.auth != nil {
+	// Another instance forwarding a client has checked it already and
+	// signed who it is.
+	fid, isForwarded, fwdErr := readForward(h.secret, r, time.Now())
+	switch {
+	case fwdErr != nil:
+		http.Error(w, fwdErr.Error(), http.StatusForbidden)
+		return
+	case isForwarded:
+		id = fid
+	case h.auth != nil:
 		id, authErr = h.auth.Authorize(r, name)
 		id.Name = cleanName(id.Name)
 	}
@@ -155,6 +167,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+
+	if h.cluster != nil {
+		lease, self, err := h.cluster.Owner(ctx, name)
+		switch {
+		case err != nil:
+			h.log.Error("could not resolve room owner", "room", name, "err", err)
+			_ = conn.Close(websocket.StatusTryAgainLater, "room unavailable")
+			return
+		case !self && isForwarded:
+			// Ownership changed while the client was being forwarded;
+			// its retry resolves again instead of bouncing around.
+			_ = conn.Close(websocket.StatusTryAgainLater, "room moving")
+			return
+		case !self:
+			err := h.proxy(ctx, conn, lease.Addr, forwardParams(r, name, since), id)
+			h.log.Debug("forwarded connection ended", "room", name, "owner", lease.Instance, "err", err)
+			return
+		}
+	}
 
 	client := room.NewClient(newClientID(), h.cfg.SendBuffer).
 		WithName(id.Name).
@@ -290,6 +321,9 @@ func (h *Handler) closeConn(conn *websocket.Conn, client *room.Client, readErr e
 		_ = conn.Close(websocket.StatusPolicyViolation, string(room.ReasonSlowConsumer))
 	case client.Reason() == room.ReasonShutdown:
 		_ = conn.Close(websocket.StatusGoingAway, string(room.ReasonShutdown))
+	case client.Reason() == room.ReasonMoved:
+		// 1012: reconnect; the new owner has the board.
+		_ = conn.Close(websocket.StatusServiceRestart, string(room.ReasonMoved))
 	case errors.Is(readErr, proto.ErrBadEnvelope):
 		_ = conn.Close(websocket.StatusUnsupportedData, readErr.Error())
 	default:
