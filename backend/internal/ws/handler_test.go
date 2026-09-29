@@ -105,6 +105,9 @@ func send(t *testing.T, conn *websocket.Conn, raw string) {
 func TestTwoClientsExchangeOps(t *testing.T) {
 	f := newFixture(t, DefaultConfig())
 	a := dial(t, f, "r1")
+	// The upgrade returns before the join; wait for a's hello so a is in
+	// the room when b arrives.
+	read(t, a, proto.TypeHello)
 	b := dial(t, f, "r1")
 
 	helloB := read(t, b, proto.TypeHello)

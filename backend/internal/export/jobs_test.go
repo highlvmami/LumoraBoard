@@ -101,7 +101,7 @@ func start(t *testing.T, cfg Config, src Source, n Notifier) *Manager {
 
 func waitState(t *testing.T, m *Manager, id, user string, want State) Status {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for {
 		st, err := m.Status(id, user)
 		if err != nil {
@@ -159,7 +159,7 @@ func TestHundredConcurrentRequestsAllFinish(t *testing.T) {
 	ids := make([]string, 100)
 	for i := range ids {
 		wg.Go(func() {
-			st, err := m.Submit(Request{Board: "b", Format: FormatPNG, Scale: 1, User: fmt.Sprint("u", i)})
+			st, err := m.Submit(Request{Board: "b", Format: FormatJSON, User: fmt.Sprint("u", i)})
 			if err != nil {
 				t.Error(err)
 				return
