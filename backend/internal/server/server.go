@@ -17,17 +17,21 @@ type Config struct {
 	ShutdownTimeout time.Duration
 }
 
-// Server is the HTTP entry point. WebSocket rooms attach to it in Faz 1.
+// Server is the HTTP entry point.
 type Server struct {
 	cfg  Config
 	log  *slog.Logger
 	http *http.Server
 }
 
-// New builds a Server with its routes registered.
-func New(cfg Config, log *slog.Logger) *Server {
+// New builds a Server with its routes registered. ws serves the WebSocket
+// endpoint; it may be nil in tests that only need the HTTP routes.
+func New(cfg Config, log *slog.Logger, ws http.Handler) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealth)
+	if ws != nil {
+		mux.Handle("GET /ws", ws)
+	}
 
 	return &Server{
 		cfg: cfg,
