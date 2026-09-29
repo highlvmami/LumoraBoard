@@ -1,82 +1,125 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
+	import { page } from '$app/state';
 	import { checkHealth, type BackendStatus } from '$lib/health';
-	import { BoardStore, sorted, type BoardObject, type Op } from '$lib/board';
-	import { connectRoom, type ConnectionState, type Envelope, type RoomConnection } from '$lib/ws';
+	import { BoardStore, sorted, type BoardObject, type Op, type Point } from '$lib/board';
+	import { colorFor, displayName, Presence, throttle } from '$lib/presence';
+	import { connectRoom, type ConnectionState, type RoomConnection } from '$lib/ws';
+	import Whiteboard, { type RemoteCursor } from '$lib/Whiteboard.svelte';
+
+	const NAME_KEY = 'lumora.name';
+	const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 	let health = $state<BackendStatus>('checking');
 	let room = $state('demo');
+	let roomInput = $state('demo');
+	let name = $state('');
 	let socket = $state<ConnectionState>('closed');
 	let detail = $state('');
 	let notice = $state('');
-	let log = $state<Envelope[]>([]);
 
-	// The store is a plain object; `tick` bumps whenever it changes so the
-	// derived values below re-read it.
-	let tick = $state(0);
+	// Store and presence are plain objects; the ticks bump whenever they
+	// change so the derived values below re-read them. Board and presence
+	// tick separately so cursor traffic never re-sorts the board.
+	let boardTick = $state(0);
+	let presenceTick = $state(0);
 	let store = newStore();
+	let presence = new Presence();
 	let conn: RoomConnection | null = null;
 
 	function newStore() {
 		return new BoardStore((e) => {
-			if (e.type === 'rejected') notice = `rejected ${e.clientOpId}: ${e.reason}`;
-			tick++;
+			if (e.type === 'rejected') flash(`Change rejected: ${e.reason}`);
+			boardTick++;
 		});
 	}
 
 	let objects = $derived.by((): BoardObject[] => {
-		void tick;
+		void boardTick;
 		return sorted(store.view);
 	});
 	let clientId = $derived.by(() => {
-		void tick;
+		void boardTick;
 		return store.clientId;
 	});
-	let seq = $derived.by(() => {
-		void tick;
-		return store.seq;
+	let members = $derived.by(() => {
+		void presenceTick;
+		return [...presence.members.values()];
 	});
-	let others = $derived.by(() => {
-		void tick;
-		return store.members.size;
+	let cursors = $derived.by((): RemoteCursor[] => {
+		void presenceTick;
+		return [...presence.cursors].map(([id, c]) => ({
+			id,
+			x: c.x,
+			y: c.y,
+			color: colorFor(id),
+			name: displayName(presence.members.get(id), id)
+		}));
 	});
-	let pendingCount = $derived.by(() => {
-		void tick;
-		return store.pending.length;
-	});
-	let selected = $state('');
 
-	onMount(async () => {
-		health = await checkHealth();
+	let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+	function flash(msg: string) {
+		notice = msg;
+		clearTimeout(noticeTimer);
+		noticeTimer = setTimeout(() => (notice = ''), 4000);
+	}
+
+	onMount(() => {
+		try {
+			name = localStorage.getItem(NAME_KEY) ?? '';
+		} catch {
+			// Storage can be unavailable (private mode); a guest name is fine.
+		}
+		const fromUrl = page.url.searchParams.get('room');
+		if (fromUrl && ROOM_RE.test(fromUrl)) room = roomInput = fromUrl;
+		connect();
+		checkHealth().then((h) => (health = h));
 	});
-	onDestroy(() => conn?.close());
+	onDestroy(() => {
+		conn?.close();
+		sendCursor.cancel();
+	});
 
 	function connect() {
 		conn?.close();
 		store = newStore();
-		log = [];
+		presence = new Presence();
 		notice = '';
-		selected = '';
-		tick++;
+		boardTick++;
+		presenceTick++;
 		conn = connectRoom(
 			room,
 			{
 				onMessage: (env) => {
-					if (store.receive(env)) tick++;
-					log = [...log.slice(-49), env];
+					if (env.type === 'cursor' || env.type === 'joined' || env.type === 'left') {
+						if (presence.receive(env)) presenceTick++;
+						return;
+					}
+					if (env.type === 'hello' && presence.receive(env)) presenceTick++;
+					if (store.receive(env)) boardTick++;
 				},
 				onState: (s, d) => {
 					socket = s;
 					detail = d ?? '';
 				}
 			},
-			{ since: () => store.seq }
+			{ since: () => store.seq, name: name.trim() }
 		);
 	}
 
-	function disconnect() {
-		conn?.close();
-		conn = null;
+	function join(e: SubmitEvent) {
+		e.preventDefault();
+		if (!ROOM_RE.test(roomInput)) return;
+		room = roomInput;
+		try {
+			localStorage.setItem(NAME_KEY, name.trim());
+		} catch {
+			// See onMount.
+		}
+		const url = new URL(page.url);
+		url.searchParams.set('room', room);
+		history.replaceState(history.state, '', url);
+		connect();
 	}
 
 	function send(op: Op) {
@@ -84,152 +127,191 @@
 		try {
 			const env = conn.send(op);
 			store.local(env.clientOpId!, op);
-			tick++;
-		} catch (e) {
-			notice = String(e);
+			boardTick++;
+		} catch {
+			flash('Not connected; change not sent.');
 		}
 	}
 
-	let counter = 0;
-	function addRect() {
-		const id = `${store.clientId.slice(0, 4)}-${Date.now().toString(36)}-${counter++}`;
-		const n = objects.length;
-		send({
-			kind: 'add',
-			id,
-			object: { id, kind: 'rect', x: 20 + n * 30, y: 20 + n * 20, w: 80, h: 50, color: '#3b82f6', z: n }
-		});
-		selected = id;
-	}
+	// ~25 Hz: smooth enough with the CSS glide, cheap for the room.
+	const sendCursor = throttle((p: Point | null) => {
+		conn?.sendCursor(p ? { x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10 } : { hidden: true });
+	}, 40);
 
-	function nudge(dx: number, dy: number) {
-		const o = store.view.get(selected);
-		if (!o) return;
-		send({ kind: 'update', id: o.id, patch: { x: o.x + dx, y: o.y + dy } });
-	}
-
-	function remove() {
-		if (!selected) return;
-		send({ kind: 'delete', id: selected });
-		selected = '';
+	function copyLink() {
+		navigator.clipboard?.writeText(page.url.href).then(
+			() => flash('Link copied.'),
+			() => flash(page.url.href)
+		);
 	}
 </script>
 
 <svelte:head>
-	<title>LumoraBoard</title>
+	<title>{room} · LumoraBoard</title>
 </svelte:head>
 
-<main>
-	<h1>LumoraBoard</h1>
-	<p>Backend: <strong data-status={health}>{health}</strong></p>
-
-	<section>
-		<h2>Room</h2>
-		<form
-			onsubmit={(e) => {
-				e.preventDefault();
-				connect();
-			}}
-		>
-			<input bind:value={room} pattern={"[A-Za-z0-9_\\-]{1,64}"} required aria-label="room name" />
-			<button type="submit">Connect</button>
-			<button type="button" onclick={disconnect} disabled={socket === 'closed'}>Disconnect</button>
+<div class="app">
+	<header>
+		<strong class="logo">LumoraBoard</strong>
+		<form onsubmit={join}>
+			<input bind:value={roomInput} pattern={'[A-Za-z0-9_\\-]{1,64}'} required aria-label="Room" placeholder="room" />
+			<input bind:value={name} maxlength="32" aria-label="Your name" placeholder="your name" />
+			<button type="submit">Join</button>
 		</form>
-		<p>
-			Socket: <strong data-status={socket}>{socket}</strong>
-			{#if detail}<span class="muted">({detail})</span>{/if}
-			{#if clientId}
-				<span class="muted">· you are {clientId} · seq {seq} · {others} other{others === 1 ? '' : 's'}</span>
-			{/if}
-		</p>
-	</section>
-
-	<section>
-		<h2>
-			Objects <span class="muted">({objects.length}{#if pendingCount}, {pendingCount} pending{/if})</span>
-		</h2>
-		<div class="toolbar">
-			<button type="button" onclick={addRect} disabled={socket !== 'open'}>Add rect</button>
-			<button type="button" onclick={() => nudge(10, 0)} disabled={!selected || socket !== 'open'}>Move right</button>
-			<button type="button" onclick={() => nudge(0, 10)} disabled={!selected || socket !== 'open'}>Move down</button>
-			<button type="button" onclick={remove} disabled={!selected || socket !== 'open'}>Delete</button>
+		<div class="people" aria-label="People in this room">
+			<span class="avatar me" style:--c={colorFor(clientId || 'me')} title="{name || 'You'} (you)">
+				{(name || 'You').slice(0, 1).toUpperCase()}
+			</span>
+			{#each members as m (m.id)}
+				{@const label = displayName(m, m.id)}
+				<span class="avatar" style:--c={colorFor(m.id)} title={label} data-member={m.id}>
+					{label.replace('Guest ', '').slice(0, 1).toUpperCase()}
+				</span>
+			{/each}
 		</div>
-		{#if notice}<p class="notice">{notice}</p>{/if}
-		<ul class="objects">
-			{#each objects as o (o.id)}
-				<li>
-					<label>
-						<input type="radio" name="selected" value={o.id} bind:group={selected} />
-						<code data-object={o.id}>{o.kind} {o.id} at {o.x},{o.y} v{o.version}{#if o.createdBy === clientId} (yours){/if}</code>
-					</label>
-				</li>
-			{/each}
-		</ul>
-	</section>
+		<button type="button" class="share" onclick={copyLink}>Share</button>
+		<p class="status">
+			<span class="dot" data-status={socket}></span>
+			<strong data-status={socket}>{socket}</strong>
+			{#if detail && socket !== 'open'}<span class="muted">({detail})</span>{/if}
+			<span class="muted">· backend <strong data-status={health}>{health}</strong></span>
+		</p>
+	</header>
 
-	<section>
-		<h2>Messages</h2>
-		<ol reversed>
-			{#each [...log].reverse() as env, i (log.length - i)}
-				<li>
-					<code>
-						{#if env.seq}#{env.seq}{/if}
-						{env.type}
-						{#if env.from}from {env.from === clientId ? 'you' : env.from}{/if}
-						{#if env.payload !== undefined}{JSON.stringify(env.payload).slice(0, 120)}{/if}
-					</code>
-				</li>
-			{/each}
-		</ol>
-	</section>
-</main>
+	<main>
+		<Whiteboard {objects} {cursors} {clientId} editable={socket === 'open'} onop={send} oncursor={(p) => sendCursor.call(p)} />
+		{#if notice}<p class="notice" role="status">{notice}</p>{/if}
+		{#if socket === 'reconnecting'}<p class="banner">Connection lost, reconnecting…</p>{/if}
+	</main>
+</div>
 
 <style>
-	main {
-		font-family: system-ui, sans-serif;
-		max-width: 44rem;
-		margin: 3rem auto;
-		padding: 0 1rem;
+	:global(html, body) {
+		margin: 0;
+		height: 100%;
+		font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+		color: #18181b;
+		background: #fafafa;
 	}
-	section {
-		margin-top: 1.5rem;
-	}
-	form,
-	.toolbar {
+	.app {
 		display: flex;
-		gap: 0.5rem;
+		flex-direction: column;
+		height: 100dvh;
+	}
+	header {
+		display: flex;
+		align-items: center;
 		flex-wrap: wrap;
+		gap: 0.5rem 1rem;
+		padding: 0.5rem 1rem;
+		background: white;
+		border-bottom: 1px solid #e4e4e7;
 	}
-	input:not([type='radio']) {
-		flex: 1;
-		padding: 0.4rem;
+	.logo {
+		font-size: 1rem;
+		letter-spacing: -0.01em;
 	}
-	.muted {
-		color: #6b7280;
-		font-weight: normal;
+	form {
+		display: flex;
+		gap: 0.4rem;
+	}
+	input {
+		width: 8rem;
+		padding: 0.35rem 0.5rem;
+		border: 1px solid #d4d4d8;
+		border-radius: 6px;
+		font: inherit;
 		font-size: 0.9rem;
 	}
-	.notice {
-		color: #b45309;
+	header button {
+		padding: 0.35rem 0.75rem;
+		border: 1px solid #d4d4d8;
+		border-radius: 6px;
+		background: white;
+		font: inherit;
+		font-size: 0.9rem;
+		cursor: pointer;
 	}
-	.objects {
-		list-style: none;
-		padding: 0;
+	.people {
+		display: flex;
+		margin-left: auto;
 	}
-	ol {
+	.avatar {
+		display: grid;
+		place-items: center;
+		width: 28px;
+		height: 28px;
+		margin-left: -6px;
+		border: 2px solid white;
+		border-radius: 50%;
+		background: var(--c);
+		color: white;
+		font-size: 0.75rem;
+		font-weight: 600;
+	}
+	.status {
+		display: flex;
+		align-items: center;
+		gap: 0.35rem;
+		margin: 0;
+		font-size: 0.8rem;
+	}
+	.status .dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: currentColor;
+	}
+	.muted {
+		color: #71717a;
+	}
+	main {
+		position: relative;
+		flex: 1;
+		min-height: 0;
+	}
+	.notice,
+	.banner {
+		position: absolute;
+		left: 50%;
+		transform: translateX(-50%);
+		margin: 0;
+		padding: 0.4rem 0.8rem;
+		border-radius: 6px;
 		font-size: 0.85rem;
-		max-height: 16rem;
-		overflow: auto;
+	}
+	.notice {
+		bottom: 16px;
+		background: #18181b;
+		color: white;
+	}
+	.banner {
+		top: 64px;
+		background: #fef3c7;
+		color: #92400e;
 	}
 	[data-status='ok'],
 	[data-status='open'] {
 		color: #15803d;
 	}
-	[data-status='reconnecting'] {
+	[data-status='connecting'],
+	[data-status='reconnecting'],
+	[data-status='checking'] {
 		color: #b45309;
 	}
 	[data-status='down'],
 	[data-status='closed'] {
 		color: #b91c1c;
+	}
+	@media (max-width: 640px) {
+		header {
+			padding: 0.4rem 0.75rem;
+		}
+		input {
+			width: 6rem;
+		}
+		.status .muted {
+			display: none;
+		}
 	}
 </style>

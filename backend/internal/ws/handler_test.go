@@ -292,3 +292,77 @@ func TestSlowConsumerGetsPolicyViolation(t *testing.T) {
 		t.Fatalf("slow close status = %v (%v), want PolicyViolation", websocket.CloseStatus(err), err)
 	}
 }
+
+func TestCursorReachesOthersButNotSender(t *testing.T) {
+	f := newFixture(t, DefaultConfig())
+	a := dialPath(t, f, "/ws", "r1&name=Ay%C5%9Fe")
+	read(t, a, proto.TypeHello)
+	b := dialPath(t, f, "/ws", "r1&name=%20%20Bora%07%20")
+
+	var hb proto.Hello
+	if err := json.Unmarshal(read(t, b, proto.TypeHello).Payload, &hb); err != nil {
+		t.Fatal(err)
+	}
+	if len(hb.Members) != 1 || hb.Members[0].Name != "Ayşe" {
+		t.Fatalf("b's hello members = %+v, want Ayşe", hb.Members)
+	}
+	var joined proto.Member
+	if err := json.Unmarshal(read(t, a, proto.TypeJoined).Payload, &joined); err != nil {
+		t.Fatal(err)
+	}
+	if joined.Name != "Bora" {
+		t.Fatalf("joined = %+v, want cleaned name Bora", joined)
+	}
+
+	send(t, b, `{"v":1,"type":"cursor","payload":{"x":10,"y":20}}`)
+	got := read(t, a, proto.TypeCursor)
+	var cur proto.Cursor
+	if err := json.Unmarshal(got.Payload, &cur); err != nil {
+		t.Fatal(err)
+	}
+	if got.From != joined.ID || cur.X != 10 || cur.Y != 20 || got.Seq != 0 {
+		t.Fatalf("cursor = %+v %+v", got, cur)
+	}
+
+	// The sender never sees its own cursor: an op sent after it is the
+	// next thing b reads.
+	send(t, b, `{"v":1,"type":"op","clientOpId":"x","payload":{"kind":"add","id":"r1","object":{"id":"r1","kind":"rect"}}}`)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, data, err := b.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env proto.Envelope
+	if err := json.Unmarshal(data, &env); err != nil || env.Type != proto.TypeOp {
+		t.Fatalf("b read %s, want its op echo", data)
+	}
+}
+
+func TestCursorFloodIsThrottled(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.CursorInterval = time.Hour
+	f := newFixture(t, cfg)
+	a := dial(t, f, "r1")
+	read(t, a, proto.TypeHello)
+	b := dial(t, f, "r1")
+	read(t, b, proto.TypeHello)
+
+	for i := range 50 {
+		send(t, b, fmt.Sprintf(`{"v":1,"type":"cursor","payload":{"x":%d,"y":0}}`, i))
+	}
+	send(t, b, `{"v":1,"type":"cursor","payload":{"hidden":true}}`)
+
+	first := read(t, a, proto.TypeCursor)
+	var cur proto.Cursor
+	_ = json.Unmarshal(first.Payload, &cur)
+	if cur.X != 0 || cur.Hidden {
+		t.Fatalf("first cursor = %+v, want x=0", cur)
+	}
+	// Everything in between fell inside the interval; hidden is exempt.
+	second := read(t, a, proto.TypeCursor)
+	_ = json.Unmarshal(second.Payload, &cur)
+	if !cur.Hidden {
+		t.Fatalf("second cursor = %+v, want hidden", cur)
+	}
+}

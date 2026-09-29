@@ -2,6 +2,8 @@ package room
 
 import (
 	"sync"
+
+	"github.com/highlvmami/lumoraboard/backend/internal/proto"
 )
 
 // CloseReason says why a room disconnected a client.
@@ -25,6 +27,7 @@ const (
 // client is dropped with ReasonSlowConsumer.
 type Client struct {
 	id     string
+	name   string
 	outbox chan []byte
 
 	once   sync.Once
@@ -43,6 +46,19 @@ func NewClient(id string, buffer int) *Client {
 		done:   make(chan struct{}),
 	}
 }
+
+// WithName sets the display name other members see. Call it before Join;
+// the room reads it only after the join hands the client over.
+func (c *Client) WithName(name string) *Client {
+	c.name = name
+	return c
+}
+
+// Name returns the client's display name, possibly empty.
+func (c *Client) Name() string { return c.name }
+
+// member describes the client on the wire.
+func (c *Client) member() proto.Member { return proto.Member{ID: c.id, Name: c.name} }
 
 // ID returns the client's identifier.
 func (c *Client) ID() string { return c.id }
@@ -78,6 +94,16 @@ func (c *Client) close(reason CloseReason) {
 // result means the outbox is full and the room will drop the client on its
 // next broadcast anyway.
 func (c *Client) Deliver(msg []byte) bool { return c.trySend(msg) }
+
+// trySendLossy queues an ephemeral message only while the outbox is at
+// most half full. Presence must never eat the headroom that ops need, or
+// a burst of cursor moves could get a healthy client dropped as slow.
+func (c *Client) trySendLossy(msg []byte) bool {
+	if len(c.outbox) > cap(c.outbox)/2 {
+		return false
+	}
+	return c.trySend(msg)
+}
 
 // trySend queues msg without blocking. It reports false when the outbox is
 // full, which is the room's cue to drop the client.
