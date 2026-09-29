@@ -119,7 +119,14 @@ const maxNameRunes = 32
 // closes it.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("room")
+	// Every step up to the join is logged at Info with one trace id, so
+	// on a host with only logs to go by a stalled socket shows its last
+	// step. Each blocking step is also bounded.
+	tl := h.log.With("trace", newClientID()[:8], "room", name)
+	began := time.Now()
+	elapsed := func() string { return time.Since(began).Round(time.Millisecond).String() }
 	if !roomNameRe.MatchString(name) {
+		tl.Warn("ws refused: bad room name")
 		http.Error(w, "room must match "+roomNameRe.String(), http.StatusBadRequest)
 		return
 	}
@@ -127,6 +134,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if raw := r.URL.Query().Get("since"); raw != "" {
 		v, err := strconv.ParseUint(raw, 10, 64)
 		if err != nil {
+			tl.Warn("ws refused: bad since", "since", raw)
 			http.Error(w, "since must be a non-negative integer", http.StatusBadRequest)
 			return
 		}
@@ -140,19 +148,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fid, isForwarded, fwdErr := readForward(h.secret, r, time.Now())
 	switch {
 	case fwdErr != nil:
+		tl.Warn("ws refused: bad forward header", "err", fwdErr)
 		http.Error(w, fwdErr.Error(), http.StatusForbidden)
 		return
 	case isForwarded:
 		id = fid
 	case h.auth != nil:
 		// Bounded: a stuck database must fail the upgrade, not hang it.
+		tl.Info("ws authorizing")
 		actx, cancel := context.WithTimeout(r.Context(), h.cfg.HandshakeTimeout)
 		id, authErr = h.auth.Authorize(r.WithContext(actx), name)
 		cancel()
+		tl.Info("ws authorized", "took", elapsed(), "user", id.User, "role", id.Role, "err", authErr)
 		id.Name = cleanName(id.Name)
 	}
 
 	// Origin is checked here, before any auth answer goes out.
+	tl.Info("ws accepting", "forwarded", isForwarded)
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: h.cfg.OriginPatterns})
 	if err != nil {
 		// Usually an origin the server does not allow; the browser only
@@ -161,6 +173,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SetReadLimit(h.cfg.MaxMessageBytes)
+	tl.Info("ws accepted", "took", elapsed())
+	if authErr != nil {
+		tl.Info("ws closing: not authorized", "err", authErr)
+	}
 	switch {
 	case errors.Is(authErr, ErrUnauthorized):
 		_ = conn.Close(closeUnauthorized, authErr.Error())
@@ -178,7 +194,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	if h.cluster != nil {
-		lease, self, err := h.cluster.Owner(ctx, name)
+		tl.Info("ws resolving owner")
+		octx, ocancel := context.WithTimeout(ctx, h.cfg.HandshakeTimeout)
+		lease, self, err := h.cluster.Owner(octx, name)
+		ocancel()
+		tl.Info("ws owner resolved", "took", elapsed(), "owner", lease.Instance, "self", self, "err", err)
 		switch {
 		case err != nil:
 			h.log.Error("could not resolve room owner", "room", name, "err", err)
@@ -190,8 +210,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			_ = conn.Close(websocket.StatusTryAgainLater, "room moving")
 			return
 		case !self:
+			tl.Info("ws forwarding", "owner", lease.Instance, "addr", lease.Addr)
 			err := h.proxy(ctx, conn, lease.Addr, forwardParams(r, name, since), id)
-			h.log.Debug("forwarded connection ended", "room", name, "owner", lease.Instance, "err", err)
+			tl.Info("forwarded connection ended", "room", name, "owner", lease.Instance, "err", err)
 			return
 		}
 	}
@@ -199,7 +220,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	client := room.NewClient(newClientID(), h.cfg.SendBuffer).
 		WithName(id.Name).
 		WithAccount(id.User, id.Avatar, id.Role)
-	h.log.Info("joining room", "room", name, "user", id.User)
+	tl.Info("joining room", "user", id.User, "took", elapsed())
 	// Bounded like authorizing: a board that cannot load must end in a
 	// logged error and a retry, not a socket that never says hello.
 	jctx, jcancel := context.WithTimeout(ctx, 3*h.cfg.HandshakeTimeout)
@@ -208,7 +229,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// 1013: the client's backoff retries, which is right for both a
 		// stopping hub and a board the store could not load yet.
-		h.log.Warn("join failed", "room", name, "err", err)
+		tl.Warn("join failed", "took", elapsed(), "err", err)
 		_ = conn.Close(websocket.StatusTryAgainLater, "room unavailable")
 		return
 	}
@@ -216,7 +237,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Info on purpose: on a host with only logs to go by, these two lines
 	// show whether sockets reach the server and why they end.
 	start := time.Now()
-	log.Info("socket connected", "user", id.User)
+	log.Info("socket connected", "user", id.User, "took", elapsed())
 
 	writeDone, readDone := make(chan struct{}), make(chan struct{})
 	go func() {

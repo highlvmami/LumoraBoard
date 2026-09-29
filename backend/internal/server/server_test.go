@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,4 +62,30 @@ func TestServeShutsDownOnCancel(t *testing.T) {
 		t.Fatal("Serve did not return after cancel")
 	}
 	http.DefaultClient.CloseIdleConnections()
+}
+
+func TestVersionAndDebugDump(t *testing.T) {
+	s := New(Config{Version: "abc123", DebugToken: "sekret"}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	get := func(path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		return rec
+	}
+	if got := get("/version").Body.String(); got != "{\"version\":\"abc123\"}\n" {
+		t.Fatalf("/version = %q", got)
+	}
+	if rec := get("/debug/goroutines?token=wrong"); rec.Code != http.StatusNotFound {
+		t.Fatalf("wrong token: %d", rec.Code)
+	}
+	if rec := get("/debug/goroutines?token=sekret"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "goroutine ") {
+		t.Fatalf("dump: %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNoDebugDumpWithoutToken(t *testing.T) {
+	rec := httptest.NewRecorder()
+	testServer().Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/debug/goroutines?token=", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
 }

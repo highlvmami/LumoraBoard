@@ -26,6 +26,10 @@ import (
 	"github.com/highlvmami/lumoraboard/backend/internal/ws"
 )
 
+// commit is set at build time with -ldflags "-X main.commit=<sha>".
+// Render also exposes the deployed commit as RENDER_GIT_COMMIT.
+var commit string
+
 func main() {
 	if err := run(); err != nil {
 		slog.Error("server stopped", "err", err)
@@ -35,6 +39,14 @@ func main() {
 
 func run() error {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	version := envOr("RENDER_GIT_COMMIT", commit)
+	if version == "" {
+		version = "dev"
+	}
+	log.Info("starting", "version", version,
+		"cluster", os.Getenv("LUMORA_CLUSTER_SECRET") != "",
+		"database", os.Getenv("LUMORA_DATABASE_URL") != "",
+		"debug_dump", os.Getenv("LUMORA_DEBUG_TOKEN") != "")
 
 	addr := os.Getenv("LUMORA_ADDR")
 	if addr == "" {
@@ -117,7 +129,10 @@ func run() error {
 		// The built frontend, served from the same origin as the API.
 		routes = append(routes, server.NewStatic(dir))
 	}
-	srv := server.New(server.Config{Addr: addr, ShutdownTimeout: 10 * time.Second}, log, wsHandler, routes...)
+	srv := server.New(server.Config{
+		Addr: addr, ShutdownTimeout: 10 * time.Second,
+		Version: version, DebugToken: os.Getenv("LUMORA_DEBUG_TOKEN"),
+	}, log, wsHandler, routes...)
 
 	// The hub and the listener stop together: the first error, or the
 	// signal, cancels the group context and the other winds down cleanly.
