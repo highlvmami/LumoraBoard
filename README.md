@@ -42,3 +42,7 @@ Boards are private once a sign-in provider is configured. The first person to op
 | `LUMORA_GUESTS=view` | Let people who are not signed in or not invited watch boards read-only. |
 
 With no provider configured the server stays open: everyone can draw on every board, as before.
+
+## Chat
+
+Each board has a chat on the same socket. `chat.send` goes through the room goroutine like an op, so messages get per-board ids in one order, fan out to everyone and are written by the same write-behind persister. The latest 50 arrive with `hello`; older ones page in from `GET /api/boards/{board}/chat?before=<id>&limit=<n>`. Each account gets a token bucket (burst 5, one message a second after that) shared across its tabs; a message may point at a board object, which the panel shows as a link that selects the object and pans to it. `chat.typing` is lossy presence like cursors, at most once a second per connection. Viewers with an account may chat; anonymous guests read only.

@@ -7,10 +7,10 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
 	import type { BoardObject, Op, Point } from './board';
-	import { boxFrom, TEXT_LINE, TEXT_SIZE, topmostAt } from './geometry';
+	import { bounds, boxFrom, TEXT_LINE, TEXT_SIZE, topmostAt } from './geometry';
 	import { throttle } from './presence';
 	import { draw, FONT, measureText } from './render';
-	import { identity, panBy, toScreen, toWorld, zoomAt, type Viewport } from './viewport';
+	import { centerOn, identity, panBy, toScreen, toWorld, zoomAt, type Viewport } from './viewport';
 
 	type Props = {
 		/** Board in paint order, including this client's pending ops. */
@@ -24,8 +24,30 @@
 		onop: (op: Op) => void;
 		/** World position of the local pointer, or null when it left. */
 		oncursor: (p: Point | null) => void;
+		/** Id of the selected object, or ''. Bindable so chat can refer to it. */
+		selected?: string;
 	};
-	let { objects, cursors, clientId, editable, readonly = false, onop, oncursor }: Props = $props();
+	let {
+		objects,
+		cursors,
+		clientId,
+		editable,
+		readonly = false,
+		onop,
+		oncursor,
+		selected = $bindable('')
+	}: Props = $props();
+
+	/** Selects an object and pans it into the middle of the view. Returns false if it is gone. */
+	export function focus(id: string): boolean {
+		const o = objects.find((x) => x.id === id);
+		if (!o) return false;
+		const b = bounds(o);
+		view = centerOn(view, { x: b.x + b.w / 2, y: b.y + b.h / 2 }, size);
+		selected = id;
+		tool = 'select';
+		return true;
+	}
 
 	const TOOLS: { id: Tool; label: string; key: string; icon: string }[] = [
 		{ id: 'select', label: 'Select', key: 'v', icon: 'M5 3l14 8-6 2-3 6z' },
@@ -44,7 +66,6 @@
 	let color = $state(COLORS[0]);
 	let width = $state(WIDTHS[1]);
 	let view = $state<Viewport>(identity());
-	let selected = $state('');
 	let draft = $state<BoardObject | null>(null);
 	let moving = $state<{ id: string; x: number; y: number } | null>(null);
 	let spaceHeld = $state(false);

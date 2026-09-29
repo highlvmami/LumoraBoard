@@ -8,6 +8,8 @@
 	import { CLOSE_FORBIDDEN, CLOSE_UNAUTHORIZED, connectRoom, type ConnectionState, type RoomConnection } from '$lib/ws';
 	import { acceptInvite, createInvite, fetchAuthStatus, loginUrl, logout, type AuthStatus } from '$lib/auth';
 	import Whiteboard, { type RemoteCursor } from '$lib/Whiteboard.svelte';
+	import Chat from '$lib/Chat.svelte';
+	import { ChatStore, fetchOlder, typingLabel } from '$lib/chat';
 
 	const NAME_KEY = 'lumora.name';
 	const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -24,14 +26,20 @@
 	/** Why the board is not shown, if it is not. */
 	let gate = $state<'' | 'signin' | 'forbidden'>('');
 	let shareOpen = $state(false);
+	let chatOpen = $state(false);
+	let unread = $state(0);
+	let selected = $state('');
+	let wb = $state<ReturnType<typeof Whiteboard>>();
 
 	// Store and presence are plain objects; the ticks bump whenever they
 	// change so the derived values below re-read them. Board and presence
 	// tick separately so cursor traffic never re-sorts the board.
 	let boardTick = $state(0);
 	let presenceTick = $state(0);
+	let chatTick = $state(0);
 	let store = newStore();
 	let presence = new Presence();
+	let chat = new ChatStore();
 	let conn: RoomConnection | null = null;
 
 	function newStore() {
@@ -68,6 +76,88 @@
 			name: displayName(presence.members.get(id), id)
 		}));
 	});
+
+	let chatMessages = $derived.by(() => {
+		void chatTick;
+		return chat.messages;
+	});
+	let chatMore = $derived.by(() => {
+		void chatTick;
+		return chat.more;
+	});
+	let typingText = $derived.by(() => {
+		void chatTick;
+		void presenceTick;
+		return typingLabel(chat.typers().map((id) => displayName(presence.members.get(id), id)));
+	});
+	let chatBlocked = $derived(auth?.enabled && !auth.user ? 'Sign in to join the chat.' : '');
+
+	const KIND_LABEL: Record<string, string> = {
+		stroke: 'Drawing',
+		rect: 'Rectangle',
+		ellipse: 'Ellipse',
+		arrow: 'Arrow',
+		text: 'Text',
+		sticky: 'Sticky note'
+	};
+
+	/** Short label for a board object, or null if it no longer exists. */
+	function describe(ref: string): string | null {
+		const o = objects.find((x) => x.id === ref);
+		if (!o) return null;
+		const t = o.text?.trim().replace(/\s+/g, ' ');
+		if (!t) return KIND_LABEL[o.kind] ?? o.kind;
+		return `${KIND_LABEL[o.kind] ?? o.kind} “${t.length > 24 ? t.slice(0, 23) + '…' : t}”`;
+	}
+
+	let selection = $derived.by(() => {
+		if (!selected) return null;
+		const label = describe(selected);
+		return label ? { id: selected, label } : null;
+	});
+
+	function sendChat(text: string, ref?: string): boolean {
+		try {
+			const env = conn!.sendChat(text, ref);
+			chat.sent(env.clientOpId!);
+			return true;
+		} catch {
+			flash('Not connected; message not sent.');
+			return false;
+		}
+	}
+
+	const sendTyping = throttle(() => conn?.sendTyping(), 1000);
+
+	async function loadOlder() {
+		const first = chat.messages[0];
+		if (!first) return;
+		try {
+			chat.prepend(await fetchOlder(room, first.id));
+			chatTick++;
+		} catch (e) {
+			flash(e instanceof Error ? e.message : String(e));
+		}
+	}
+
+	function focusRef(ref: string) {
+		if (!wb?.focus(ref)) {
+			flash('That object was deleted.');
+			return;
+		}
+		// On a phone the panel covers the board; get out of the way.
+		if (matchMedia('(max-width: 640px)').matches) chatOpen = false;
+	}
+
+	function toggleChat() {
+		chatOpen = !chatOpen;
+		if (chatOpen) unread = 0;
+	}
+
+	// Typing notices expire on their own; re-read them while any are shown.
+	const typingTimer = setInterval(() => {
+		if (chat.typing.size > 0) chatTick++;
+	}, 1000);
 
 	let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 	function flash(msg: string) {
@@ -130,6 +220,8 @@
 	onDestroy(() => {
 		conn?.close();
 		sendCursor.cancel();
+		sendTyping.cancel();
+		clearInterval(typingTimer);
 	});
 
 	function connect() {
@@ -137,18 +229,35 @@
 		gate = '';
 		store = newStore();
 		presence = new Presence();
+		chat = new ChatStore();
+		unread = 0;
+		selected = '';
 		notice = '';
 		boardTick++;
 		presenceTick++;
+		chatTick++;
 		conn = connectRoom(
 			room,
 			{
 				onMessage: (env) => {
 					if (env.type === 'cursor' || env.type === 'joined' || env.type === 'left') {
 						if (presence.receive(env)) presenceTick++;
+						if (env.type === 'left' && chat.receive(env)) chatTick++;
 						return;
 					}
-					if (env.type === 'hello' && presence.receive(env)) presenceTick++;
+					if (env.type === 'chat.message' || env.type === 'chat.typing') {
+						if (chat.receive(env)) chatTick++;
+						if (env.type === 'chat.message' && !chatOpen && env.from !== store.clientId) unread++;
+						return;
+					}
+					if (env.type === 'reject' && env.clientOpId && chat.claim(env.clientOpId)) {
+						flash(`Message not sent: ${(env.payload as { reason?: string })?.reason ?? 'rejected'}`);
+						return;
+					}
+					if (env.type === 'hello') {
+						if (presence.receive(env)) presenceTick++;
+						if (chat.receive(env)) chatTick++;
+					}
 					if (store.receive(env)) boardTick++;
 				},
 				onState: (s, d, code) => {
@@ -242,6 +351,9 @@
 				</span>
 			{/each}
 		</div>
+		<button type="button" class="chat-toggle" aria-pressed={chatOpen} onclick={toggleChat}>
+			Chat{#if unread > 0}<span class="badge" aria-label="{unread} unread">{unread > 99 ? '99+' : unread}</span>{/if}
+		</button>
 		<div class="share-wrap">
 			{#if auth?.enabled && role === 'owner'}
 				<button type="button" aria-expanded={shareOpen} onclick={() => (shareOpen = !shareOpen)}>Share</button>
@@ -269,35 +381,57 @@
 	</header>
 
 	<main>
-		{#if gate}
-			<section class="gate">
-				{#if gate === 'signin' && auth}
-					<h1>Sign in to open “{room}”</h1>
-					<p>LumoraBoard boards are private to the people their owner invites.</p>
-					<div class="providers">
-						{#each auth.providers as p (p.id)}
-							<a class="button primary" href={loginUrl(p.id, here)}>Continue with {p.name}</a>
-						{/each}
-					</div>
-				{:else}
-					<h1>No access to “{room}”</h1>
-					<p>Ask the board's owner for an invite link, or open another board from the box above.</p>
-				{/if}
-			</section>
-		{:else}
-			<Whiteboard
-				{objects}
-				{cursors}
-				{clientId}
-				editable={socket === 'open' && canEdit(role)}
-				readonly={!canEdit(role)}
-				onop={send}
-				oncursor={(p) => sendCursor.call(p)}
-			/>
-			{#if !canEdit(role) && socket === 'open'}<p class="viewonly">View only</p>{/if}
+		<div class="stage">
+			{#if gate}
+				<section class="gate">
+					{#if gate === 'signin' && auth}
+						<h1>Sign in to open “{room}”</h1>
+						<p>LumoraBoard boards are private to the people their owner invites.</p>
+						<div class="providers">
+							{#each auth.providers as p (p.id)}
+								<a class="button primary" href={loginUrl(p.id, here)}>Continue with {p.name}</a>
+							{/each}
+						</div>
+					{:else}
+						<h1>No access to “{room}”</h1>
+						<p>Ask the board's owner for an invite link, or open another board from the box above.</p>
+					{/if}
+				</section>
+			{:else}
+				<Whiteboard
+					bind:this={wb}
+					bind:selected
+					{objects}
+					{cursors}
+					{clientId}
+					editable={socket === 'open' && canEdit(role)}
+					readonly={!canEdit(role)}
+					onop={send}
+					oncursor={(p) => sendCursor.call(p)}
+				/>
+				{#if !canEdit(role) && socket === 'open'}<p class="viewonly">View only</p>{/if}
+			{/if}
+			{#if notice}<p class="notice" role="status">{notice}</p>{/if}
+			{#if socket === 'reconnecting'}<p class="banner">Connection lost, reconnecting…</p>{/if}
+		</div>
+		{#if chatOpen && !gate}
+			<div class="chat-pane">
+				<Chat
+					messages={chatMessages}
+					more={chatMore}
+					typing={typingText}
+					{clientId}
+					blocked={chatBlocked}
+					{selection}
+					{describe}
+					onsend={sendChat}
+					ontyping={() => sendTyping.call()}
+					onolder={loadOlder}
+					onfocus={focusRef}
+					onclose={() => (chatOpen = false)}
+				/>
+			</div>
 		{/if}
-		{#if notice}<p class="notice" role="status">{notice}</p>{/if}
-		{#if socket === 'reconnecting'}<p class="banner">Connection lost, reconnecting…</p>{/if}
 	</main>
 </div>
 
@@ -383,8 +517,37 @@
 	}
 	main {
 		position: relative;
+		display: flex;
 		flex: 1;
 		min-height: 0;
+	}
+	.stage {
+		position: relative;
+		flex: 1;
+		min-width: 0;
+	}
+	.chat-pane {
+		flex: none;
+		width: 320px;
+	}
+	.chat-toggle {
+		position: relative;
+	}
+	.chat-toggle[aria-pressed='true'] {
+		background: #f4f4f5;
+	}
+	.badge {
+		position: absolute;
+		top: -6px;
+		right: -6px;
+		min-width: 18px;
+		padding: 0 4px;
+		border-radius: 999px;
+		background: #e11d48;
+		color: white;
+		font-size: 0.7rem;
+		line-height: 18px;
+		text-align: center;
 	}
 	.notice,
 	.banner {
@@ -507,6 +670,12 @@
 		}
 		.status .muted {
 			display: none;
+		}
+		.chat-pane {
+			position: absolute;
+			inset: 0;
+			z-index: 20;
+			width: auto;
 		}
 	}
 </style>

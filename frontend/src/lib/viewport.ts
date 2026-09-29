@@ -35,3 +35,8 @@ export function zoomAt(v: Viewport, at: Point, factor: number): Viewport {
 	const anchor = toWorld(v, at);
 	return { scale, x: anchor.x - at.x / scale, y: anchor.y - at.y / scale };
 }
+
+/** Pans (keeping the zoom) so the world point p sits in the middle of a screen of the given size. */
+export function centerOn(v: Viewport, p: Point, size: { width: number; height: number }): Viewport {
+	return { ...v, x: p.x - size.width / 2 / v.scale, y: p.y - size.height / 2 / v.scale };
+}
