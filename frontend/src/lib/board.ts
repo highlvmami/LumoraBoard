@@ -99,7 +99,6 @@ export class BoardStore {
 	/** Last seq applied to `confirmed`; sent as `since` on reconnect. */
 	seq = 0;
 	clientId = '';
-	members = new Set<string>();
 	pending: Pending[] = [];
 
 	constructor(private readonly onEvent: (e: StoreEvent) => void = () => {}) {}
@@ -130,12 +129,6 @@ export class BoardStore {
 				this.onEvent({ type: 'rejected', clientOpId: payload.clientOpId, reason: payload.reason });
 				return true;
 			}
-			case 'joined':
-				if (env.from) this.members.add(env.from);
-				return false;
-			case 'left':
-				if (env.from) this.members.delete(env.from);
-				return false;
 			default:
 				return false;
 		}
@@ -145,12 +138,10 @@ export class BoardStore {
 		const h = env.payload as {
 			clientId: string;
 			seq: number;
-			members: string[];
 			resume?: boolean;
 			objects?: BoardObject[];
 		};
 		this.clientId = h.clientId;
-		this.members = new Set(h.members);
 		if (h.resume) {
 			// The ops we missed follow as ordinary op messages.
 			return false;

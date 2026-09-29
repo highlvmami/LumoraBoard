@@ -25,6 +25,8 @@ export type RoomEvents = {
 export type ConnectOptions = {
 	/** Last seq the caller has applied; sent as `since` so the server can replay instead of snapshot. */
 	since?: () => number;
+	/** Display name other members see. */
+	name?: string;
 	/** Backoff bounds in ms. */
 	minDelay?: number;
 	maxDelay?: number;
@@ -34,10 +36,12 @@ export type ConnectOptions = {
 };
 
 /** Builds the URL of the socket endpoint relative to the current page. */
-export function roomSocketUrl(room: string, since = 0, location: Location = globalThis.location): string {
+export function roomSocketUrl(room: string, since = 0, location: Location = globalThis.location, name = ''): string {
 	const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
-	const url = `${scheme}://${location.host}/ws?room=${encodeURIComponent(room)}`;
-	return since > 0 ? `${url}&since=${since}` : url;
+	let url = `${scheme}://${location.host}/ws?room=${encodeURIComponent(room)}`;
+	if (since > 0) url += `&since=${since}`;
+	if (name) url += `&name=${encodeURIComponent(name)}`;
+	return url;
 }
 
 /** Parses a server frame; returns null for anything that is not an envelope. */
@@ -75,6 +79,8 @@ const FATAL_CLOSE_CODES = new Set([1003, 1008]);
 export type RoomConnection = {
 	/** Sends an op; returns the envelope so the caller can track its clientOpId. Throws if not open. */
 	send: (payload: unknown) => Envelope;
+	/** Sends a presence update. Best effort: dropped silently while not open. */
+	sendCursor: (payload: { x: number; y: number } | { hidden: true }) => void;
 	close: () => void;
 };
 
@@ -93,7 +99,7 @@ export function connectRoom(room: string, events: RoomEvents, opts: ConnectOptio
 	function open() {
 		const since = opts.since?.() ?? 0;
 		events.onState(attempt === 0 ? 'connecting' : 'reconnecting', attempt === 0 ? undefined : `attempt ${attempt}`);
-		const s = createSocket(roomSocketUrl(room, since));
+		const s = createSocket(roomSocketUrl(room, since, globalThis.location, opts.name));
 		socket = s;
 
 		s.onopen = () => {
@@ -132,6 +138,10 @@ export function connectRoom(room: string, events: RoomEvents, opts: ConnectOptio
 			const env = makeOp(payload);
 			socket.send(JSON.stringify(env));
 			return env;
+		},
+		sendCursor(payload) {
+			if (!socket || socket.readyState !== WebSocket.OPEN) return;
+			socket.send(JSON.stringify({ v: PROTOCOL_VERSION, type: 'cursor', payload }));
 		},
 		close() {
 			closed = true;
