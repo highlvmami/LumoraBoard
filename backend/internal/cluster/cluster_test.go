@@ -225,12 +225,16 @@ func TestClientsOnTwoInstancesShareARoom(t *testing.T) {
 
 	onA.send("x")
 	onB.send("y")
-	for _, c := range []*client{onA, onB} {
+	// Either may win the race to the owner; both clients must agree.
+	var order string
+	for i, c := range []*client{onA, onB} {
 		s1, id1 := c.op()
 		s2, id2 := c.op()
-		if s1 != 1 || s2 != 2 || id1 != "x" || id2 != "y" {
-			t.Fatalf("got %d:%s %d:%s, want one order on both instances", s1, id1, s2, id2)
+		got := id1 + id2
+		if s1 != 1 || s2 != 2 || (got != "xy" && got != "yx") || (i > 0 && got != order) {
+			t.Fatalf("client %d got %d:%s %d:%s, want one order on both instances (first saw %q)", i, s1, id1, s2, id2, order)
 		}
+		order = got
 	}
 }
 

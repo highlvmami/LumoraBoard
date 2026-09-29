@@ -33,8 +33,9 @@ type Config struct {
 	SendBuffer int
 	// MaxMessageBytes caps a single inbound frame.
 	MaxMessageBytes int64
-	// ReadTimeout is how long a client may stay silent before it is
-	// considered dead. Pings go out at half this interval.
+	// ReadTimeout sets the keepalive: pings go out at half this interval
+	// and a client that does not answer one within WriteTimeout is
+	// dropped. Silence alone is fine; a viewer may send nothing for hours.
 	ReadTimeout time.Duration
 	// WriteTimeout bounds a single outbound write.
 	WriteTimeout time.Duration
@@ -200,10 +201,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log := h.log.With("room", name, "client", client.ID())
 	log.Debug("connected")
 
-	writeDone := make(chan struct{})
+	writeDone, readDone := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(writeDone)
-		if h.writePump(ctx, conn, client) {
+		if h.writePump(ctx, conn, client, readDone) {
 			// The room dropped us: say why with a proper close frame,
 			// which also unblocks the read pump.
 			h.closeConn(conn, client, nil)
@@ -213,6 +214,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	err = h.readPump(ctx, conn, client, rm)
+	close(readDone)
 	rm.Leave(client)
 	<-writeDone
 
@@ -225,9 +227,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) readPump(ctx context.Context, conn *websocket.Conn, client *room.Client, rm *room.Room) error {
 	var lastCursor, lastTyping time.Time
 	for {
-		readCtx, cancel := context.WithTimeout(ctx, h.cfg.ReadTimeout)
-		_, data, err := conn.Read(readCtx)
-		cancel()
+		// No deadline here: the write pump's pings detect a dead peer, and
+		// a failed ping cancels ctx.
+		_, data, err := conn.Read(ctx)
 		if err != nil {
 			return err
 		}
@@ -283,9 +285,20 @@ func (h *Handler) readPump(ctx context.Context, conn *websocket.Conn, client *ro
 // writePump drains the client's outbox onto the socket and keeps the
 // connection alive with pings. It reports true when it stopped because
 // the room dropped the client, false when a write failed or ctx ended.
-func (h *Handler) writePump(ctx context.Context, conn *websocket.Conn, client *room.Client) bool {
+func (h *Handler) writePump(ctx context.Context, conn *websocket.Conn, client *room.Client, readDone <-chan struct{}) bool {
 	ping := time.NewTicker(h.cfg.ReadTimeout / 2)
 	defer ping.Stop()
+	// Once the read pump is gone nothing will read the pong, so a ping in
+	// flight must not wait for it.
+	pingBase, stopPings := context.WithCancel(ctx)
+	defer stopPings()
+	go func() {
+		select {
+		case <-readDone:
+			stopPings()
+		case <-pingBase.Done():
+		}
+	}()
 
 	for {
 		select {
@@ -298,7 +311,7 @@ func (h *Handler) writePump(ctx context.Context, conn *websocket.Conn, client *r
 				return false
 			}
 		case <-ping.C:
-			pingCtx, cancel := context.WithTimeout(ctx, h.cfg.WriteTimeout)
+			pingCtx, cancel := context.WithTimeout(pingBase, h.cfg.WriteTimeout)
 			err := conn.Ping(pingCtx)
 			cancel()
 			if err != nil {
