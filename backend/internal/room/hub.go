@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/highlvmami/lumoraboard/backend/internal/store"
 )
 
 // ErrHubClosed is returned by Join once the hub has stopped.
@@ -22,11 +24,51 @@ type Config struct {
 	// OpLogSize is how many recent ops a room keeps for reconnecting
 	// clients; a client further behind than that gets a full snapshot.
 	OpLogSize int
+
+	// Store persists boards. Nil means store.Nop: nothing survives a
+	// restart.
+	Store store.Store
+	// PersistQueue is how many records a room may have waiting for the
+	// store before it stops taking new ops. With the batch being written,
+	// at most PersistQueue+BatchSize records per room are held in memory.
+	PersistQueue int
+	// BatchSize and FlushInterval bound how long a record waits: a batch
+	// is written when it is this big or this old, whichever comes first.
+	BatchSize     int
+	FlushInterval time.Duration
+	// SnapshotEvery is how many ops a room accepts between snapshots.
+	// Each snapshot lets the store drop the ops it covers.
+	SnapshotEvery int
+	// ShutdownFlush is how long a stopping server keeps retrying writes.
+	ShutdownFlush time.Duration
+}
+
+// withDefaults fills persistence settings a caller left zero.
+func (c Config) withDefaults() Config {
+	if c.Store == nil {
+		c.Store = store.Nop{}
+	}
+	if c.PersistQueue < 2 {
+		c.PersistQueue = 1024
+	}
+	if c.BatchSize <= 0 {
+		c.BatchSize = 256
+	}
+	if c.FlushInterval <= 0 {
+		c.FlushInterval = 100 * time.Millisecond
+	}
+	if c.SnapshotEvery <= 0 {
+		c.SnapshotEvery = 1000
+	}
+	if c.ShutdownFlush <= 0 {
+		c.ShutdownFlush = 5 * time.Second
+	}
+	return c
 }
 
 // DefaultConfig is what the server uses unless told otherwise.
 func DefaultConfig() Config {
-	return Config{InboundBuffer: 256, IdleTimeout: time.Minute, OpLogSize: 2000}
+	return Config{InboundBuffer: 256, IdleTimeout: time.Minute, OpLogSize: 2000}.withDefaults()
 }
 
 // Hub owns the room table. Like a room it is a single goroutine: joins and
@@ -42,9 +84,11 @@ type Hub struct {
 	closed   chan struct{}
 	wg       sync.WaitGroup
 
-	rooms       map[string]*Room // owned by Run
-	slowDrops   atomic.Int64
-	cursorDrops atomic.Int64
+	rooms           map[string]*Room // owned by Run
+	slowDrops       atomic.Int64
+	cursorDrops     atomic.Int64
+	persistStalls   atomic.Int64
+	persistFailures atomic.Int64
 }
 
 type hubJoin struct {
@@ -67,7 +111,7 @@ type retireReq struct {
 // NewHub creates a hub. Call Run before Join.
 func NewHub(cfg Config, log *slog.Logger) *Hub {
 	return &Hub{
-		cfg:      cfg,
+		cfg:      cfg.withDefaults(),
 		log:      log,
 		joinCh:   make(chan hubJoin),
 		retireCh: make(chan retireReq),
@@ -97,11 +141,12 @@ func (h *Hub) Run(ctx context.Context) error {
 				h.wg.Add(1)
 				go rm.run(ctx)
 			}
-			// Forward to the room. Its joinCh is buffered and the room
-			// drains it in its select loop, so this cannot deadlock.
-			reply := make(chan error, 1)
-			rm.joinCh <- joinReq{client: req.client, since: req.since, reply: reply}
-			req.reply <- hubJoinResult{room: rm, err: <-reply}
+			// Forward to the room, which answers the caller directly. The
+			// hub does not wait for that answer: a room still loading its
+			// board from the store must not hold up joins to other rooms.
+			// joinCh is buffered and the room drains it promptly, loading
+			// or not, so this send does not block for long.
+			rm.joinCh <- joinReq{client: req.client, since: req.since, reply: req.reply}
 
 		case req := <-h.retireCh:
 			// Approve only if no join is already queued for that room.
@@ -136,6 +181,13 @@ func (h *Hub) Join(ctx context.Context, room string, c *Client, since uint64) (*
 
 // SlowDrops reports how many clients rooms have dropped for not keeping up.
 func (h *Hub) SlowDrops() int64 { return h.slowDrops.Load() }
+
+// PersistStalls reports how many times a room paused taking ops because
+// its store writes fell behind.
+func (h *Hub) PersistStalls() int64 { return h.persistStalls.Load() }
+
+// PersistFailures reports how many store writes failed (and were retried).
+func (h *Hub) PersistFailures() int64 { return h.persistFailures.Load() }
 
 // CursorDrops reports how many presence updates were discarded because a
 // room or a recipient was busy. Dropping them is by design.

@@ -3,16 +3,19 @@
 dev: db-up
 	$(MAKE) -j2 dev-backend dev-frontend
 
+DATABASE_URL ?= postgres://lumora:lumora@localhost:5432/lumora
+
 dev-backend:
-	cd backend && go run ./cmd/server
+	cd backend && LUMORA_DATABASE_URL=$(DATABASE_URL) go run ./cmd/server
 
 dev-frontend:
 	cd frontend && npm run dev
 
 test: test-backend test-frontend
 
+# Store tests against Postgres run when the database is up (make db-up).
 test-backend:
-	cd backend && go test -race ./...
+	cd backend && LUMORA_TEST_DATABASE_URL=$(DATABASE_URL) go test -race ./...
 
 test-frontend:
 	cd frontend && npm test && npm run check
