@@ -63,13 +63,12 @@ Set the same `LUMORA_CLUSTER_SECRET` (at least 16 characters) and `LUMORA_DATABA
 
 On a crash, ops the owner accepted but had not yet flushed (normally a fraction of a second's worth) are lost, and export jobs running on it fail; clients re-sync from the database when they reconnect.
 
-## Deploying to Fly.io
+## Deploying to Render
 
-The `Dockerfile` builds one image: the Go server plus the built frontend (`LUMORA_STATIC_DIR`), served from one origin. `fly.toml` runs it as a public demo on two machines in cluster mode, with dev login on so anyone can sign in with a name.
+The `Dockerfile` builds one image: the Go server plus the built frontend (`LUMORA_STATIC_DIR`), served from one origin. `render.yaml` runs it on Render's free plan as a public demo with dev login on, so anyone can sign in with a name.
 
-1. Create a Postgres database on [Neon](https://neon.tech) (Frankfurt is closest to the `fra` region) and copy its connection string with connection pooling turned off.
-2. Create a Fly.io account and an organization token (Dashboard → Tokens).
-3. Add three repository secrets on GitHub (Settings → Secrets and variables → Actions): `FLY_API_TOKEN`, `LUMORA_DATABASE_URL` (the Neon string) and `LUMORA_CLUSTER_SECRET` (any random string of 16+ characters).
-4. Run the Deploy workflow (Actions → Deploy → Run workflow). After that every green push to main deploys by itself.
+1. Create a free Postgres database on [Neon](https://neon.tech) (Frankfurt matches the service's region) and copy its connection string with connection pooling turned off.
+2. In the [Render dashboard](https://dashboard.render.com) choose New → Blueprint, connect this repository and paste the Neon string as `LUMORA_DATABASE_URL`.
+3. Render builds and deploys the image, then redeploys every push to main once CI is green. The public address comes from `RENDER_EXTERNAL_URL`.
 
-The app is `lumoraboard-demo` at https://lumoraboard-demo.fly.dev; to rename it, change `app` and both URLs in `fly.toml`. With the flyctl CLI instead: `fly apps create <name>`, `fly secrets set LUMORA_DATABASE_URL=... LUMORA_CLUSTER_SECRET=...`, `fly deploy`.
+A free instance sleeps after about 15 minutes without traffic, and the first visit after that takes around a minute to wake it. It runs one instance; the multi-server mode needs `LUMORA_CLUSTER_SECRET` and more than one instance.

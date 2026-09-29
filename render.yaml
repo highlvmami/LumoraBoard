@@ -1,0 +1,19 @@
+# Render blueprint: New > Blueprint in the Render dashboard, pick this
+# repository, then fill in LUMORA_DATABASE_URL (e.g. a free Neon database).
+services:
+  - type: web
+    name: lumoraboard
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: LUMORA_DATABASE_URL
+        sync: false
+      # A public demo: anyone signs in with just a name. Remove once GitHub
+      # or Google sign-in is configured.
+      - key: LUMORA_DEV_LOGIN
+        value: "1"
