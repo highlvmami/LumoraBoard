@@ -8,6 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
+	"unicode/utf8"
 )
 
 // Version is the current envelope version. Clients must send it verbatim.
@@ -22,6 +25,13 @@ const (
 	// TypeCursor is a presence update: where a member's pointer is. It is
 	// ephemeral, carries no seq, is never logged and may be dropped.
 	TypeCursor = "cursor"
+
+	// Chat. chat.send goes client to server and is sequenced by the room
+	// like an op; chat.message is the broadcast. chat.typing is lossy
+	// presence in both directions. The latest messages come with hello.
+	TypeChatSend    = "chat.send"
+	TypeChatMessage = "chat.message"
+	TypeChatTyping  = "chat.typing"
 
 	// TypeHello is sent to a client right after it joins a room.
 	TypeHello = "hello"
@@ -58,6 +68,8 @@ type Hello struct {
 	Objects  json.RawMessage `json:"objects,omitempty"`
 	// Role is what this client may do; viewers get their ops rejected.
 	Role Role `json:"role,omitempty"`
+	// Chat is the latest chat messages, sent on every join.
+	Chat ChatHistory `json:"chat"`
 }
 
 // Role is what a member may do on a board.
@@ -126,6 +138,58 @@ func DecodeCursor(payload json.RawMessage) (Cursor, error) {
 	return c, nil
 }
 
+// MaxChatRunes caps one chat message.
+const MaxChatRunes = 1000
+
+// ChatSend is the payload of TypeChatSend. Ref optionally points at a
+// board object the message is about.
+type ChatSend struct {
+	Text string `json:"text"`
+	Ref  string `json:"ref,omitempty"`
+}
+
+// ChatMessage is a sequenced chat message: the payload of TypeChatMessage
+// and an element of ChatHistory.Messages.
+type ChatMessage struct {
+	ID     uint64    `json:"id"`
+	From   string    `json:"from"` // connection id
+	User   string    `json:"user,omitempty"`
+	Name   string    `json:"name"`
+	Avatar string    `json:"avatar,omitempty"`
+	Text   string    `json:"text"`
+	Ref    string    `json:"ref,omitempty"`
+	At     time.Time `json:"at"`
+}
+
+// ChatHistory is the recent chat carried by Hello. More says whether older
+// messages exist; the client pages through them over REST.
+type ChatHistory struct {
+	Messages []ChatMessage `json:"messages"`
+	More     bool          `json:"more"`
+}
+
+// ErrBadChat wraps chat validation failures. Unlike ErrBadEnvelope it
+// only earns the sender a reject, not a closed connection.
+var ErrBadChat = errors.New("bad chat message")
+
+// DecodeChat parses and checks a chat.send payload. Text is trimmed.
+func DecodeChat(payload json.RawMessage) (ChatSend, error) {
+	var c ChatSend
+	if err := json.Unmarshal(payload, &c); err != nil {
+		return ChatSend{}, fmt.Errorf("%w: %w", ErrBadChat, err)
+	}
+	c.Text = strings.TrimSpace(c.Text)
+	switch {
+	case c.Text == "":
+		return ChatSend{}, fmt.Errorf("%w: empty", ErrBadChat)
+	case !utf8.ValidString(c.Text) || utf8.RuneCountInString(c.Text) > MaxChatRunes:
+		return ChatSend{}, fmt.Errorf("%w: at most %d characters", ErrBadChat, MaxChatRunes)
+	case len(c.Ref) > 64:
+		return ChatSend{}, fmt.Errorf("%w: bad ref", ErrBadChat)
+	}
+	return c, nil
+}
+
 // Reject is the payload of a TypeReject message.
 type Reject struct {
 	ClientOpID string `json:"clientOpId"`
@@ -157,7 +221,9 @@ func (e Envelope) Validate() error {
 	if e.V != Version {
 		return fmt.Errorf("%w: version %d, want %d", ErrBadEnvelope, e.V, Version)
 	}
-	if e.Type != TypeOp && e.Type != TypeCursor {
+	switch e.Type {
+	case TypeOp, TypeCursor, TypeChatSend, TypeChatTyping:
+	default:
 		return fmt.Errorf("%w: client may not send type %q", ErrBadEnvelope, e.Type)
 	}
 	if e.Seq != 0 || e.From != "" {

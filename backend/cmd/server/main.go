@@ -74,10 +74,17 @@ func run() error {
 
 	hub := room.NewHub(roomCfg, log)
 	wsHandler := ws.NewHandler(hub, wsCfg, log)
+	var boardAuth ws.Authorizer // nil in open mode
 	if authSvc.Enabled() {
-		wsHandler.WithAuth(authSvc)
+		boardAuth = authSvc
+		wsHandler.WithAuth(boardAuth)
 	}
-	srv := server.New(server.Config{Addr: addr, ShutdownTimeout: 10 * time.Second}, log, wsHandler, authSvc)
+	var boards store.Store = store.Nop{}
+	if roomCfg.Store != nil {
+		boards = roomCfg.Store
+	}
+	chat := ws.NewChatHistory(boards, boardAuth, log)
+	srv := server.New(server.Config{Addr: addr, ShutdownTimeout: 10 * time.Second}, log, wsHandler, authSvc, chat)
 
 	// The hub and the listener stop together: the first error, or the
 	// signal, cancels the group context and the other winds down cleanly.

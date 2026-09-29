@@ -192,7 +192,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // readPump decodes client frames and hands them to the room. It returns
 // when the connection fails, the client misbehaves, or ctx is cancelled.
 func (h *Handler) readPump(ctx context.Context, conn *websocket.Conn, client *room.Client, rm *room.Room) error {
-	var lastCursor time.Time
+	var lastCursor, lastTyping time.Time
 	for {
 		readCtx, cancel := context.WithTimeout(ctx, h.cfg.ReadTimeout)
 		_, data, err := conn.Read(readCtx)
@@ -218,17 +218,29 @@ func (h *Handler) readPump(ctx context.Context, conn *websocket.Conn, client *ro
 			}
 			continue
 		}
+		switch env.Type {
+		case proto.TypeChatTyping:
+			if now := time.Now(); now.Sub(lastTyping) >= typingInterval {
+				lastTyping = now
+				rm.Typing(client)
+			}
+			continue
+		case proto.TypeChatSend:
+			msg, err := proto.DecodeChat(env.Payload)
+			if err != nil {
+				h.rejectFrame(client, rm, env, err)
+				continue
+			}
+			if err := rm.SubmitChat(ctx, client, env, msg); err != nil {
+				return err
+			}
+			continue
+		}
 		op, err := board.DecodeOp(env.Payload)
 		if err != nil {
 			// A malformed op is the sender's problem alone: tell them and
 			// keep the connection; only a broken envelope closes it.
-			client.Deliver(proto.Encode(proto.Envelope{
-				V:          proto.Version,
-				Type:       proto.TypeReject,
-				Room:       rm.Name(),
-				ClientOpID: env.ClientOpID,
-				Payload:    rejectPayload(env.ClientOpID, err),
-			}))
+			h.rejectFrame(client, rm, env, err)
 			continue
 		}
 		if err := rm.Submit(ctx, client, env, op); err != nil {
@@ -283,6 +295,23 @@ func (h *Handler) closeConn(conn *websocket.Conn, client *room.Client, readErr e
 	default:
 		_ = conn.Close(websocket.StatusNormalClosure, "")
 	}
+}
+
+// typingInterval is how often one connection may announce typing. Clients
+// show the indicator for a few seconds, so once a second is plenty.
+const typingInterval = time.Second
+
+// rejectFrame answers a frame that decoded as an envelope but whose
+// payload was bad. It is the sender's problem alone, so the connection
+// stays open.
+func (h *Handler) rejectFrame(client *room.Client, rm *room.Room, env proto.Envelope, err error) {
+	client.Deliver(proto.Encode(proto.Envelope{
+		V:          proto.Version,
+		Type:       proto.TypeReject,
+		Room:       rm.Name(),
+		ClientOpID: env.ClientOpID,
+		Payload:    rejectPayload(env.ClientOpID, err),
+	}))
 }
 
 func rejectPayload(clientOpID string, err error) json.RawMessage {

@@ -25,3 +25,17 @@ CREATE TABLE IF NOT EXISTS board_ops (
 	created_at   timestamptz NOT NULL DEFAULT now(),
 	PRIMARY KEY (board, seq)
 );
+
+-- Chat is kept in full; ids are per board, assigned by the room.
+CREATE TABLE IF NOT EXISTS chat_messages (
+	board      text        NOT NULL,
+	id         bigint      NOT NULL,
+	sender     text        NOT NULL,
+	user_id    text        NOT NULL DEFAULT '',
+	name       text        NOT NULL,
+	avatar_url text        NOT NULL DEFAULT '',
+	text       text        NOT NULL,
+	ref        text        NOT NULL DEFAULT '',
+	created_at timestamptz NOT NULL,
+	PRIMARY KEY (board, id)
+);
