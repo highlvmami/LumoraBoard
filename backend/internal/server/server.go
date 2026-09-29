@@ -46,7 +46,7 @@ func New(cfg Config, log *slog.Logger, ws http.Handler, extra ...Routes) *Server
 		log: log,
 		http: &http.Server{
 			Addr:              cfg.Addr,
-			Handler:           mux,
+			Handler:           logUpgrades(log, mux),
 			ReadHeaderTimeout: 5 * time.Second,
 		},
 	}
@@ -94,4 +94,18 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 func handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// logUpgrades logs every request for /ws or asking for a protocol
+// upgrade as it arrives, before any handler runs. Behind a hosting proxy
+// it tells apart "the socket never reached us" from "we rejected it".
+func logUpgrades(log *slog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ws" || r.Header.Get("Upgrade") != "" {
+			log.Info("upgrade request", "path", r.URL.Path, "proto", r.Proto,
+				"upgrade", r.Header.Get("Upgrade"), "connection", r.Header.Get("Connection"),
+				"origin", r.Header.Get("Origin"), "host", r.Host)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
