@@ -24,9 +24,33 @@ A real-time collaborative whiteboard. Several people draw on the same board at o
 
 > The demo runs on Render's free plan. After about 15 minutes without visitors it goes to sleep, and the first visit then takes up to a minute to wake it.
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/giris.png" width="49%" alt="Welcome screen: enter your name">
+  <img src="docs/screenshots/menu.png" width="49%" alt="Menu: create a room or join one">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/ortak-cizim.png" alt="Two people drawing on the same board with live cursors">
+</p>
+<p align="center"><sub>Two people drawing on the same board; the other person's cursor shows with their name.</sub></p>
+
+<p align="center">
+  <img src="docs/screenshots/davet.png" width="49%" alt="Invite menu with edit and view-only links and codes">
+  <img src="docs/screenshots/boyut-renk.png" width="49%" alt="A selected rectangle being resized by its corner handles, color palette open">
+</p>
+<p align="center"><sub>Left: the invite menu. Right: resizing with corner handles and the color palette.</sub></p>
+
+<p align="center">
+  <img src="docs/screenshots/mobil-izleyici.png" width="280" alt="The board on a phone in view-only mode">
+</p>
+<p align="center"><sub>A board opened on a phone with a "View only" invite: the viewer sees everything live but cannot change it.</sub></p>
+
 ## Features
 
-- **Live drawing:** pen, rectangle, ellipse, arrow, text and sticky notes, with colors and stroke widths. Changes reach everyone in the room immediately.
+- **Live drawing:** pen, rectangle, ellipse, arrow, text and an eraser, with a 24-color palette, a custom color and three stroke widths. Changes reach everyone in the room immediately.
+- **Select and resize:** pick an object to move it or drag its corner handles to resize it. Pan and zoom the canvas.
 - **Live cursors:** you see where everyone else is pointing, with their name.
 - **Rooms with owners:** whoever creates a room owns it and decides who gets in.
 - **Invites:** the owner shares an edit or view-only invite as a link or a short code such as `K7QM-2XRA`. Viewers watch live but cannot change anything.

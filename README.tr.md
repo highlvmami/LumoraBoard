@@ -24,9 +24,33 @@ Gerçek zamanlı, ortak kullanılan bir beyaz tahta. Birden fazla kişi aynı ta
 
 > Demo, Render'ın ücretsiz planında çalışıyor. Yaklaşık 15 dakika kimse girmezse uykuya geçer; sonraki ilk girişte uyanması bir dakikayı bulabilir.
 
+## Ekran görüntüleri
+
+<p align="center">
+  <img src="docs/screenshots/giris.png" width="49%" alt="Giriş ekranı: adını yaz">
+  <img src="docs/screenshots/menu.png" width="49%" alt="Menü: oda oluştur ya da odaya katıl">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/ortak-cizim.png" alt="İki kişi aynı tahtada çiziyor, imleçler görünüyor">
+</p>
+<p align="center"><sub>İki kişi aynı tahtada çiziyor; diğer kişinin imleci adıyla görünüyor.</sub></p>
+
+<p align="center">
+  <img src="docs/screenshots/davet.png" width="49%" alt="Davet menüsü: düzenleme ve izleme linkleri ile kodları">
+  <img src="docs/screenshots/boyut-renk.png" width="49%" alt="Seçili dikdörtgen köşe tutamaçlarıyla boyutlandırılıyor, renk paleti açık">
+</p>
+<p align="center"><sub>Solda davet menüsü, sağda köşe tutamaçlarıyla boyutlandırma ve renk paleti.</sub></p>
+
+<p align="center">
+  <img src="docs/screenshots/mobil-izleyici.png" width="280" alt="Telefonda sadece izleme modunda tahta">
+</p>
+<p align="center"><sub>Telefonda "View only" davetiyle açılan tahta: izleyici canlı görür, değişiklik yapamaz.</sub></p>
+
 ## Özellikler
 
-- **Canlı çizim:** kalem, dikdörtgen, elips, ok, yazı ve yapışkan not; renk ve kalınlık seçenekleriyle. Değişiklikler odadaki herkese anında ulaşır.
+- **Canlı çizim:** kalem, dikdörtgen, elips, ok, yazı ve silgi; 24 renkli palet, özel renk ve üç kalınlık seçeneğiyle. Değişiklikler odadaki herkese anında ulaşır.
+- **Seçme ve boyutlandırma:** bir nesneyi seçip taşıyabilir, köşe tutamaçlarıyla büyütüp küçültebilirsin. Tuvali kaydırıp yakınlaştırabilirsin.
 - **Canlı imleçler:** diğer kişilerin nereyi gösterdiğini isimleriyle birlikte görürsün.
 - **Sahipli odalar:** odayı kim oluşturursa sahibi odur ve kimin gireceğine o karar verir.
 - **Davetler:** oda sahibi düzenleme ya da sadece izleme daveti paylaşır; davet bir link ya da `K7QM-2XRA` gibi kısa bir kod olabilir. İzleyiciler her şeyi canlı görür ama değişiklik yapamaz.
