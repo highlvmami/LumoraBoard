@@ -4,7 +4,7 @@
 
 **Canlı imleçler, özel odalar ve davet linkleriyle gerçek zamanlı ortak beyaz tahta.**
 
-**[Canlı demo →](https://lumoraboard-demo.onrender.com)**
+**[Canlı demo →](https://p01--lumoraboard--bnwmr7y8bjlm.code.run)**
 
 [English](README.md) · Türkçe
 
@@ -15,14 +15,14 @@
   <img src="https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white" alt="TypeScript">
   <img src="https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL">
   <img src="https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white" alt="Docker">
-  <img src="https://img.shields.io/badge/Render-46E3B7?logo=render&logoColor=black" alt="Render">
+  <img src="https://img.shields.io/badge/Northflank-01C38D?logoColor=white" alt="Northflank">
 </p>
 
 </div>
 
 Gerçek zamanlı, ortak kullanılan bir beyaz tahta. Birden fazla kişi aynı tahtaya aynı anda çizer; herkes diğerlerinin çizimlerini ve imleçlerini anında görür. Arka uç Go ve WebSocket ile, her oda için ayrı bir goroutine olacak şekilde yazıldı; ön yüz SvelteKit ile yapıldı.
 
-> Demo, Render'ın ücretsiz planında çalışıyor. Yaklaşık 15 dakika kimse girmezse uykuya geçer; sonraki ilk girişte uyanması bir dakikayı bulabilir.
+> Demo, Northflank'in ücretsiz planında çalışıyor ve uykuya geçmiyor.
 
 ## Ekran görüntüleri
 
@@ -88,7 +88,7 @@ Projenin amacı eşzamanlılık (concurrency), bu yüzden tasarım paylaşılan 
 | Arka uç | Go 1.25, `coder/websocket`, `pgx` |
 | Ön yüz | SvelteKit (Svelte 5), TypeScript, Canvas |
 | Veritabanı | PostgreSQL |
-| Yayına alma | Docker (tek imaj), Render, Neon |
+| Yayına alma | Docker (tek imaj), Northflank, Neon |
 | Testler | `go test -race`, Vitest, svelte-check, golangci-lint |
 
 ## Klasör yapısı
@@ -135,12 +135,14 @@ Sonra http://localhost:5173 adresini aç. `make dev` sadece isimle girişi açar
 
 Hiçbir giriş yöntemi ayarlanmazsa sunucu açık modda çalışır: herkes her tahtaya çizebilir.
 
-## Yayına alma (Render + Neon)
+## Yayına alma (Northflank + Neon)
 
 `Dockerfile`, Go sunucusunu ve derlenmiş ön yüzü içeren tek bir imaj üretir; ikisi aynı adresten sunulur.
 
 1. [Neon](https://neon.tech) üzerinde ücretsiz bir Postgres veritabanı oluştur ve bağlantı adresini kopyala.
-2. [Render panelinde](https://dashboard.render.com) New → Blueprint seç ve bu repoyu bağla. Servisi `render.yaml` kurar.
-3. `LUMORA_DATABASE_URL` değişkenine Neon adresini yaz. Render imajı derler ve `main` dalına yapılan her push'ta yeniden yayına alır.
+2. [Northflank](https://northflank.com)'te bir Combined service aç, bu repoyu bağla. Build türü Dockerfile (`/Dockerfile`, context `/`), port `8080` (HTTP, public), health check `/healthz`.
+3. Ortam değişkenleri: `LUMORA_DATABASE_URL` (Neon adresi), `LUMORA_DEV_LOGIN=1` ve servisin genel adresiyle `LUMORA_PUBLIC_URL`. Northflank `main` dalına yapılan her push'ta imajı derleyip yeniden yayına alır.
+
+Render'ı tercih edersen `render.yaml` blueprint'i de hâlâ çalışır.
 
 `GET /healthz` sunucunun sağlığını, `GET /version` yayındaki commit'i gösterir.

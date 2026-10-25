@@ -4,7 +4,7 @@
 
 **Real-time collaborative whiteboard with live cursors, private rooms and invite links.**
 
-**[Live demo →](https://lumoraboard-demo.onrender.com)**
+**[Live demo →](https://p01--lumoraboard--bnwmr7y8bjlm.code.run)**
 
 English · [Türkçe](README.tr.md)
 
@@ -15,14 +15,14 @@ English · [Türkçe](README.tr.md)
   <img src="https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white" alt="TypeScript">
   <img src="https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL">
   <img src="https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white" alt="Docker">
-  <img src="https://img.shields.io/badge/Render-46E3B7?logo=render&logoColor=black" alt="Render">
+  <img src="https://img.shields.io/badge/Northflank-01C38D?logoColor=white" alt="Northflank">
 </p>
 
 </div>
 
 A real-time collaborative whiteboard. Several people draw on the same board at once and see each other's strokes and cursors as they happen. The backend is Go with WebSockets, built around one goroutine per room; the frontend is SvelteKit.
 
-> The demo runs on Render's free plan. After about 15 minutes without visitors it goes to sleep, and the first visit then takes up to a minute to wake it.
+> The demo runs on Northflank's free plan and does not go to sleep.
 
 ## Screenshots
 
@@ -88,7 +88,7 @@ The point of the project is concurrency, so the design keeps shared state to a m
 | Backend | Go 1.25, `coder/websocket`, `pgx` |
 | Frontend | SvelteKit (Svelte 5), TypeScript, Canvas |
 | Database | PostgreSQL |
-| Deployment | Docker (a single image), Render, Neon |
+| Deployment | Docker (a single image), Northflank, Neon |
 | Tests | `go test -race`, Vitest, svelte-check, golangci-lint |
 
 ## Project layout
@@ -135,12 +135,14 @@ Then open http://localhost:5173. `make dev` turns on name-only sign-in.
 
 With no sign-in method configured, the server runs open: everyone can draw on every board.
 
-## Deploying (Render + Neon)
+## Deploying (Northflank + Neon)
 
 The `Dockerfile` builds one image containing the Go server and the built frontend, served from the same origin.
 
 1. Create a free Postgres database on [Neon](https://neon.tech) and copy its connection string.
-2. In the [Render dashboard](https://dashboard.render.com), choose New → Blueprint and connect this repository. `render.yaml` sets up the service.
-3. Set `LUMORA_DATABASE_URL` to the Neon string. Render builds the image and redeploys on every push to `main`.
+2. On [Northflank](https://northflank.com), create a Combined service from this repository. Build type Dockerfile (`/Dockerfile`, context `/`), port `8080` (HTTP, public), health check `/healthz`.
+3. Environment: `LUMORA_DATABASE_URL` (the Neon string), `LUMORA_DEV_LOGIN=1`, and `LUMORA_PUBLIC_URL` set to the service's public address. Northflank builds the image and redeploys on every push to `main`.
+
+The `render.yaml` blueprint still works if you prefer Render.
 
 `GET /healthz` reports health and `GET /version` the deployed commit.
